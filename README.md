@@ -1,4 +1,4 @@
-# pi-repair-layer
+# pi-tool-args-fix
 
 **A pi extension that intercepts `tool_call` events and fixes common LLM argument mistakes before tools execute.**
 
@@ -33,13 +33,13 @@ Every repair is logged with `tool_input_repaired:<toolName>` via `console.error`
 ## Install
 
 ```bash
-pi install git:github.com/renatocaliari/pi-repair-layer@v0.1.0
+pi install git:github.com/renatocaliari/pi-tool-args-fix@v0.1.0
 ```
 
 Or from a local clone:
 
 ```bash
-pi install ./path/to/pi-repair-layer
+pi install ./path/to/pi-tool-args-fix
 ```
 
 ## Usage
