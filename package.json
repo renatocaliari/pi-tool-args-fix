@@ -1,5 +1,5 @@
 {
-  "name": "pi-repair-layer",
+  "name": "pi-tool-args-fix",
   "version": "0.1.0",
   "description": "Intercepts tool calls and repairs common LLM argument mistakes before execution — null stripping, JSON parsing, array wrapping, markdown path cleanup, and relational defaults.",
   "keywords": ["pi-package", "pi-extension", "tool-calling", "repair", "llm"],
