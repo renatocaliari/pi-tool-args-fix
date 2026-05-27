@@ -20,10 +20,15 @@ Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/205095667850242061
 | 8 | `name: "null"` | omit the field entirely | Strip null-like strings ("null", "none", "n/a") |
 | 9 | `strict: "true"` | `strict: true` | Coerce boolean strings ("true", "yes", "1") |
 | 10 | `limit: "42"` | `limit: 42` | Coerce number strings ("42", "3.14") |
+| 11 | 11 | `read ~/dir/` → EISDIR | `📁 Directory: listing` | Fallback: `fs.readdir()` and return listing with hint |
 
 ## Architecture
 
 **Validate-then-repair** — parse first, only repair what would fail. Valid input passes through unchanged. Content fields (`command`, `code`, `oldText`, `newText`) are **never** touched — only structural/container fields are repaired.
+
+### Directory Fallback
+
+When the model calls `read` on a directory path instead of a file, the native tool returns an EISDIR error. The extension intercepts this via the `tool_result` hook, detects the EISDIR error, lists the directory contents via `fs.readdir()`, and returns a clean listing with a hint for the model — all in the same tool result. No second tool call needed.
 
 Repair order matters:
 1. `clean-path` — unwrap markdown links, normalize `~/` paths

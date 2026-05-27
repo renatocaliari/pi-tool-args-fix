@@ -28,6 +28,8 @@ import {
   coerceToNumber,
   isContentField,
   isNumberField,
+  isEisdirError,
+  extractTextContent,
 } from "./repairs.js";
 
 // ─── Path Repair Tests ──────────────────────────────────────────────────
@@ -446,5 +448,75 @@ describe("isNumberField", () => {
     expect(isNumberField("path")).toBe(false);
     expect(isNumberField("content")).toBe(false);
     expect(isNumberField("strict")).toBe(false);
+  });
+});
+
+// ─── EISDIR Detection Tests ─────────────────────────────────────────
+
+describe("isEisdirError", () => {
+  it("detects raw Node.js EISDIR error", () => {
+    expect(isEisdirError("EISDIR: illegal operation on a directory, read")).toBe(true);
+  });
+
+  it("detects just the EISDIR code", () => {
+    expect(isEisdirError("EISDIR")).toBe(true);
+  });
+
+  it("detects 'illegal operation on a directory' message", () => {
+    expect(isEisdirError("illegal operation on a directory")).toBe(true);
+  });
+
+  it("detects 'is a directory' safe error", () => {
+    expect(isEisdirError("/path/to/dir is a directory")).toBe(true);
+  });
+
+  it("detects mixed-case variations", () => {
+    expect(isEisdirError("EisDir")).toBe(true);
+    expect(isEisdirError("Illegal Operation on a Directory")).toBe(true);
+  });
+
+  it("does NOT false-positive on other errors", () => {
+    expect(isEisdirError("ENOENT: no such file or directory")).toBe(false);
+    expect(isEisdirError("EACCES: permission denied")).toBe(false);
+    expect(isEisdirError("Command failed with exit code 1")).toBe(false);
+    expect(isEisdirError("Connection refused")).toBe(false);
+  });
+});
+
+// ─── Extract Text Content Tests ──────────────────────────────────────
+
+describe("extractTextContent", () => {
+  it("extracts text from tool result content array", () => {
+    const content = [{ type: "text", text: "Hello, world!" }];
+    expect(extractTextContent(content)).toBe("Hello, world!");
+  });
+
+  it("extracts text from multi-part content", () => {
+    const content = [
+      { type: "image", url: "img.png" },
+      { type: "text", text: "Result text" },
+    ];
+    expect(extractTextContent(content)).toBe("Result text");
+  });
+
+  it("returns null for non-array content", () => {
+    expect(extractTextContent("string")).toBeNull();
+    expect(extractTextContent({})).toBeNull();
+    expect(extractTextContent(null)).toBeNull();
+    expect(extractTextContent(undefined)).toBeNull();
+  });
+
+  it("returns null for empty array", () => {
+    expect(extractTextContent([])).toBeNull();
+  });
+
+  it("returns null when no text part exists", () => {
+    const content = [{ type: "image", url: "img.png" }];
+    expect(extractTextContent(content)).toBeNull();
+  });
+
+  it("handles content with isError metadata", () => {
+    const content = [{ type: "text", text: "EISDIR: illegal operation on a directory, read" }];
+    expect(extractTextContent(content)).toBe("EISDIR: illegal operation on a directory, read");
   });
 });

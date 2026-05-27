@@ -480,3 +480,34 @@ export function isContentField(key: string): boolean {
 export function isNumberField(key: string): boolean {
   return NUMBER_FIELD_NAMES.has(key);
 }
+
+// ─── Directory Fallback Helpers ──────────────────────────────────────────
+
+const EISDIR_PATTERNS = [
+  "eisdir",
+  "illegal operation on a directory",
+  "is a directory",
+];
+
+/**
+ * Check if an error message is an EISDIR error from reading a directory.
+ * Covers both raw Node.js error and safe/fallback messages.
+ */
+export function isEisdirError(text: string): boolean {
+  const lower = text.toLowerCase();
+  return EISDIR_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
+ * Extract text content from a tool result content array.
+ */
+export function extractTextContent(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  for (const part of content) {
+    if (typeof part === "object" && part !== null && (part as Record<string, unknown>).type === "text") {
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === "string") return text;
+    }
+  }
+  return null;
+}

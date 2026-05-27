@@ -24,6 +24,8 @@
  * are NEVER touched. Only structural/container fields are repaired.
  */
 
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	PATH_FIELD_NAMES,
@@ -44,6 +46,8 @@ import {
 	coerceToNumber,
 	isContentField,
 	isNumberField,
+	isEisdirError,
+	extractTextContent,
 } from "./repairs.js";
 import { createStats, recordRepairs, formatStats } from "./stats.js";
 
@@ -290,7 +294,73 @@ export default function (pi: ExtensionAPI) {
 		return undefined; // let tool execute
 	});
 
-	// Command: view repair stats
+	// ─── tool_result: Directory fallback for read tool ───────────────
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "read") return undefined;
+		if (!event.isError) return undefined;
+
+		// Check if error is EISDIR
+		const errorText = extractTextContent(event.content);
+		if (!errorText || !isEisdirError(errorText)) return undefined;
+
+		// Get the path from the original input
+		const inputPath = (event.input as Record<string, unknown>)?.path;
+		if (typeof inputPath !== "string" || !inputPath) return undefined;
+
+		// Resolve the path
+		let resolvedPath = inputPath;
+		if (resolvedPath.startsWith("~/")) {
+			const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
+			resolvedPath = path.join(home, resolvedPath.slice(2));
+		}
+
+		try {
+			const stat = await fs.stat(resolvedPath);
+			if (!stat.isDirectory()) return undefined;
+
+			// It's a directory — list its contents
+			const entries = await fs.readdir(resolvedPath);
+			const listing = entries.map((e) => `  ${e}`).join("\n");
+			const dirName = path.basename(resolvedPath);
+
+			const listingContent = [
+				`📁 Directory: ${resolvedPath}`,
+				``,
+				"Contents:",
+				listing,
+				``,
+				`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
+				``,
+				`ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.`,
+			].join("\n");
+
+			// Log and track stats
+			const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
+			console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
+			recordRepairs(stats, [detail]);
+
+			if (ctx.hasUI) {
+				ctx.ui.setStatus(
+					"repair-layer",
+					ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
+				);
+				setTimeout(() => {
+					ctx.ui.setStatus("repair-layer", undefined);
+				}, 3000);
+			}
+
+			// Return patched result: clear error, provide listing
+			return {
+				content: [{ type: "text", text: listingContent }],
+				isError: false,
+			};
+		} catch {
+			// stat or readdir failed — don't interfere, let original error through
+			return undefined;
+		}
+	});
+
+	// ─── Command: view repair stats ─────────────────────────────────
 	pi.registerCommand("repair-stats", {
 		description: "Show repair layer statistics for this session",
 		handler: async (_args, ctx) => {
@@ -362,3 +432,5 @@ function summarizeRepairs(
 
 	return details;
 }
+
+
