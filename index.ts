@@ -48,6 +48,7 @@ import {
 	isNumberField,
 	isEisdirError,
 	extractTextContent,
+	stripExtraPropertiesFromItems,
 } from "./repairs.js";
 import { createStats, recordRepairs, formatStats } from "./stats.js";
 
@@ -132,6 +133,14 @@ function repairFieldValue(
 				if (coerced !== value) {
 					repairs.push(`${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`);
 					value = coerced;
+				}
+				break;
+			}
+			case "strip-extra-properties": {
+				const [cleaned, stripped] = stripExtraPropertiesFromItems(value, key);
+				if (cleaned !== value) {
+					repairs.push(`${parentKey}.${key}: stripped extra props [${stripped.join(", ")}] from array items`);
+					value = cleaned;
 				}
 				break;
 			}

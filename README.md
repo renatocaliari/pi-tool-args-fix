@@ -21,10 +21,26 @@ Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/205095667850242061
 | 9 | `strict: "true"` | `strict: true` | Coerce boolean strings ("true", "yes", "1") |
 | 10 | `limit: "42"` | `limit: 42` | Coerce number strings ("42", "3.14") |
 | 11 | `read ~/dir/` → EISDIR | `📁 Directory: listing` | Fallback: `fs.readdir()` and return listing with hint |
+| 12 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items (schema-aware) |
 
 ## Architecture
 
 **Validate-then-repair** — parse first, only repair what would fail. Valid input passes through unchanged. Content fields (`command`, `code`, `oldText`, `newText`) are **never** touched — only structural/container fields are repaired.
+
+### Schema-Aware Array Item Repair
+
+When a model sends extra properties inside array items (e.g. `path` duplicated inside each `edits[]` item), the extension strips them based on a per-field schema map:
+
+| Field | Allowed Properties |
+|-------|--------------------|
+| `edits` | `oldText`, `newText` |
+| `replacements` | `path`, `symbol`, `text` |
+| `files` | `path`, `edits`, `replacements` |
+| `tasks` | `agent`, `task`, `count`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
+| `steps` | `agent`, `task`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
+| `commands` | `label`, `command` |
+
+This catches the common pattern where the model duplicates a parent-level parameter (like `path`) into every nested array item.
 
 ### Directory Fallback
 
@@ -36,10 +52,11 @@ Repair order matters:
 3. `wrap-object-as-array` — `{...}` → `[{...}]`
 4. `wrap-array` — bare value → `[value]`
 5. `split-string-to-array` — `"foo, bar"` → `["foo", "bar"]`
-6. `null-like-to-undefined` — strip "null", "none", "n/a" strings
-7. `coerce-boolean` — "true"/"yes"/"1" → true
-8. `coerce-number` — "42"/"3.14" → 42/3.14
-9. Recurse into nested structures after type changes
+6. `strip-extra-properties` — remove unknown keys from array items
+7. `null-like-to-undefined` — strip "null", "none", "n/a" strings
+8. `coerce-boolean` — "true"/"yes"/"1" → true
+9. `coerce-number` — "42"/"3.14" → 42/3.14
+10. Recurse into nested structures after type changes
 
 Every repair is logged with `tool_input_repaired:<toolName>` via `console.error` and surfaced in the TUI status bar. View cumulative stats with `/repair-stats`.
 

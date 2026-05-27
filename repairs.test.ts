@@ -30,6 +30,8 @@ import {
   isNumberField,
   isEisdirError,
   extractTextContent,
+  stripExtraPropertiesFromItems,
+  ARRAY_ITEM_SCHEMAS,
 } from "./repairs.js";
 
 // ─── Path Repair Tests ──────────────────────────────────────────────────
@@ -518,5 +520,120 @@ describe("extractTextContent", () => {
   it("handles content with isError metadata", () => {
     const content = [{ type: "text", text: "EISDIR: illegal operation on a directory, read" }];
     expect(extractTextContent(content)).toBe("EISDIR: illegal operation on a directory, read");
+  });
+});
+
+// ─── Strip Extra Properties Tests ──────────────────────────────────────
+
+describe("stripExtraPropertiesFromItems", () => {
+  it("strips path from edits[] items (real-world failure)", () => {
+    const input = [
+      { oldText: "label: 'Lucro Liquido',", newText: "label: 'Resultado Liquido',", path: "/src/file.tsx" },
+      { oldText: "if (v === null)", newText: "if (v === null || !isFinite(v))", path: "/api/utils.ts" },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual([
+      { oldText: "label: 'Lucro Liquido',", newText: "label: 'Resultado Liquido'," },
+      { oldText: "if (v === null)", newText: "if (v === null || !isFinite(v))" },
+    ]);
+    expect(stripped).toEqual(["path"]);
+  });
+
+  it("strips multiple extra properties", () => {
+    const input = [
+      { oldText: "a", newText: "b", path: "/x", unused: 1, extra: true },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual([{ oldText: "a", newText: "b" }]);
+    expect(stripped).toEqual(["path", "unused", "extra"]);
+  });
+
+  it("preserves all allowed properties", () => {
+    const input = [
+      { oldText: "a", newText: "b" },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual([{ oldText: "a", newText: "b" }]);
+    expect(stripped).toEqual([]);
+  });
+
+  it("does NOT touch non-array values", () => {
+    const input = { oldText: "a", newText: "b", path: "/x" };
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toBe(input);
+    expect(stripped).toEqual([]);
+  });
+
+  it("does NOT touch arrays with unknown field names", () => {
+    const input = [{ foo: 1, bar: 2 }];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "unknown_field");
+    expect(result).toBe(input);
+    expect(stripped).toEqual([]);
+  });
+
+  it("handles empty arrays", () => {
+    const [result, stripped] = stripExtraPropertiesFromItems([], "edits");
+    expect(result).toEqual([]);
+    expect(stripped).toEqual([]);
+  });
+
+  it("handles mixed: some items need repair, some don't", () => {
+    const input = [
+      { oldText: "a", newText: "b" },              // clean
+      { oldText: "c", newText: "d", path: "/x" },  // has extra
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual([
+      { oldText: "a", newText: "b" },
+      { oldText: "c", newText: "d" },
+    ]);
+    expect(stripped).toEqual(["path"]);
+  });
+
+  it("handles replacements[] items", () => {
+    const input = [
+      { path: "/x", symbol: "HandleRequest", text: "func...", extra: true },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "replacements");
+    expect(result).toEqual([
+      { path: "/x", symbol: "HandleRequest", text: "func..." },
+    ]);
+    expect(stripped).toEqual(["extra"]);
+  });
+
+  it("handles tasks[] items with extra props", () => {
+    const input = [
+      { agent: "scout", task: "investigate", bogus: "yes" },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "tasks");
+    expect(result).toEqual([
+      { agent: "scout", task: "investigate" },
+    ]);
+    expect(stripped).toEqual(["bogus"]);
+  });
+
+  it("handles commands[] items", () => {
+    const input = [
+      { label: "test", command: "npm test", path: "/x", timeout: 30 },
+    ];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "commands");
+    expect(result).toEqual([
+      { label: "test", command: "npm test" },
+    ]);
+    expect(stripped).toEqual(["path", "timeout"]);
+  });
+
+  it("skips non-object items in array", () => {
+    const input = ["string", 42, null, { oldText: "a", newText: "b", path: "/x" }];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual(["string", 42, null, { oldText: "a", newText: "b" }]);
+    expect(stripped).toEqual(["path"]);
+  });
+
+  it("skips array items in array", () => {
+    const input = [[1, 2], { oldText: "a", newText: "b" }];
+    const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
+    expect(result).toEqual([[1, 2], { oldText: "a", newText: "b" }]);
+    expect(stripped).toEqual([]);
   });
 });

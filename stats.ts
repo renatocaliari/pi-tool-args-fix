@@ -14,6 +14,7 @@ export type RepairType =
   | "coerced boolean"
   | "coerced number"
   | "stripped null"
+  | "stripped extra props"
   | "directory fallback";
 
 export interface RepairStats {
@@ -31,7 +32,7 @@ export function parseRepairType(detail: string): RepairType | null {
   // Match the repair action after ": "
   // Note: coerced boolean/number have format 'coerced boolean/number "value" → newValue'
   const match = detail.match(
-    /: (parsed JSON|wrapped bare|wrapped object|unwrapped markdown|split string|coerced boolean|coerced number|stripped null|directory fallback)/
+    /: (parsed JSON|wrapped bare|wrapped object|unwrapped markdown|split string|coerced boolean|coerced number|stripped null|stripped extra props|directory fallback)/
   );
   if (match) {
     return match[1] as RepairType;
