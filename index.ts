@@ -212,11 +212,7 @@ export default function (pi: ExtensionAPI) {
 		if (!repairableTools.has(event.toolName)) return undefined;
 
 		const originalInput = event.input as Record<string, unknown>;
-		if (!originalInput || typeof originalInput !== "object") {
-			require('fs').appendFileSync('/tmp/repair-debug.log', `SKIP ${event.toolName}: input is not object (typeof=${typeof event.input})\n`);
-			return undefined;
-		}
-		require('fs').appendFileSync('/tmp/repair-debug.log', `PROCESS ${event.toolName}: input keys=${JSON.stringify(Object.keys(originalInput))}, typeof=${typeof originalInput}\n`);
+		if (!originalInput || typeof originalInput !== "object") return undefined;
 
 		// Deep clone to compare later
 		const originalJson = JSON.stringify(originalInput);
