@@ -15,311 +15,38 @@
  *   4. Wrap objects where arrays are expected ({a:1} → [{a:1}])
  *   5. Unwrap markdown auto-links from path fields ([file.md](url) → file.md)
  *   6. Relational defaults (read_file: limit-only → offset=1; offset-only → limit=2000)
+ *   7. Split comma/space-separated strings into arrays ("foo, bar" → ["foo", "bar"])
+ *   8. Strip null-like strings ("null", "none", "n/a" → omit field)
+ *   9. Coerce boolean strings ("true", "yes", "1" → true)
+ *  10. Coerce number strings ("42", "3.14" → 42, 3.14)
  *
  * Safety: content fields (command text, file content, oldText, newText, code, etc.)
  * are NEVER touched. Only structural/container fields are repaired.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import * as path from "node:path";
+import {
+	PATH_FIELD_NAMES,
+	ARRAY_FIELD_NAMES,
+	BOOLEAN_FIELD_NAMES,
+	CONTENT_FIELD_NAMES,
+	NUMBER_FIELD_NAMES,
+	unwrapMarkdownLink,
+	cleanPathValue,
+	tryParseJsonString,
+	wrapAsArrayIfNeeded,
+	wrapObjectAsArrayIfNeeded,
+	applyRelationalDefaults,
+	classifyField,
+	isNullLikeString,
+	trySplitStringToArray,
+	coerceToBoolean,
+	coerceToNumber,
+	isContentField,
+	isNumberField,
+} from "./repairs.js";
 
-// ─── Field Classification ────────────────────────────────────────────────
 
-const PATH_FIELD_NAMES = new Set([
-	"path",
-	"absolutePath",
-	"filePath",
-	"directory",
-	"cwd",
-	"target",
-	"dir",
-	"modulePath",
-]);
-
-const ARRAY_FIELD_NAMES = new Set([
-	"edits",
-	"files",
-	"replacements",
-	"paths",
-	"function_names",
-	"functionNames",
-	"symbols",
-	"queries",
-	"urls",
-	"commands",
-	"steps",
-	"args",
-	"values",
-	"items",
-	"extensions",
-	"include",
-	"exclude",
-	"options",
-	"headers",
-	"tasks",
-	"patterns",
-	"names",
-	"ids",
-	"schemas",
-	"replacements",
-	"messages",
-	"prompts",
-	"parameters",
-	"responses",
-	"tools",
-	"skills",
-]);
-
-const CONTENT_FIELD_NAMES = new Set([
-	"content",
-	"text",
-	"command",
-	"oldText",
-	"old_text",
-	"newText",
-	"new_text",
-	"code",
-	"source",
-	"data",
-	"body",
-	"message",
-	"description",
-	"instructions",
-	"prompt",
-	"summary",
-	"comment",
-	"note",
-]);
-
-const NUMBER_FIELD_NAMES = new Set([
-	"offset",
-	"limit",
-	"timeout",
-	"timeout_seconds",
-	"concurrency",
-	"maxTokens",
-	"max_tokens",
-	"maxResults",
-	"max_results",
-	"numResults",
-	"num_results",
-	"start_line",
-	"end_line",
-	"port",
-	"ttl",
-	"context",
-	"maxDepth",
-	"maxFiles",
-	"concurrency",
-	"retries",
-	"interval",
-]);
-
-// ─── Path Repair ──────────────────────────────────────────────────────────
-
-/**
- * Unwrap markdown auto-links from path values.
- *
- * Models trained on chat distributions sometimes emit paths as markdown links:
- *   `[notes.md](http://notes.md)` → `notes.md`
- *   `[file.ts](file://path/to/file.ts)` → `file.ts`
- *
- * Only unwraps the degenerate case where the link text equals the URL without
- * its protocol prefix. Real markdown like `[click here](https://x.com)` passes
- * through untouched.
- */
-function unwrapMarkdownLink(value: string): string {
-	if (typeof value !== "string") return value;
-
-	// Match [text](url) where text === url minus protocol
-	const mdLink = /^\[([^\]]+)\]\(([^)]+)\)$/;
-	const match = value.match(mdLink);
-	if (!match) return value;
-
-	const [, linkText, linkUrl] = match;
-
-	// Unwrap only when link text equals URL without protocol
-	const urlWithoutProtocol = linkUrl.replace(/^https?:\/\//, "").replace(/^file:\/\//, "");
-	if (linkText === urlWithoutProtocol) {
-		return linkText;
-	}
-
-	// Also handle the simple case where link text IS the URL (no protocol in URL either)
-	if (linkText === linkUrl) {
-		return linkText;
-	}
-
-	return value;
-}
-
-/**
- * Clean a path value: unwrap markdown links, trim whitespace, normalize.
- */
-function cleanPathValue(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	let cleaned = value.trim();
-	cleaned = unwrapMarkdownLink(cleaned);
-	// Resolve relative paths to absolute (common LLM mistake: ~/ paths)
-	if (cleaned.startsWith("~/")) {
-		const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
-		cleaned = path.join(home, cleaned.slice(2));
-	}
-	return cleaned;
-}
-
-// ─── Array Repairs ────────────────────────────────────────────────────────
-
-/**
- * Try to parse a string as JSON. If it parses to an array or object, return it.
- * This handles models that emit `"[\"a\",\"b\"]"` as a JSON string literal
- * instead of an actual array value.
- */
-function tryParseJsonString(value: unknown): unknown {
-	if (typeof value !== "string") return value;
-
-	const trimmed = value.trim();
-	if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return value;
-
-	try {
-		const parsed = JSON.parse(trimmed);
-		// Only accept parsed arrays/objects, not primitives (avoid false positives)
-		if (Array.isArray(parsed) || (typeof parsed === "object" && parsed !== null)) {
-			return parsed;
-		}
-	} catch {
-		// Not valid JSON — leave as-is
-	}
-	return value;
-}
-
-/**
- * Wrap a single value in an array when the key suggests an array is expected.
- * Example: `function_names: "main"` → `function_names: ["main"]`
- */
-function wrapAsArrayIfNeeded(value: unknown, key: string): unknown {
-	// Already an array — nothing to do
-	if (Array.isArray(value)) return value;
-
-	// null → empty array (the LLM meant "no items")
-	if (value === null || value === undefined) return [];
-
-	// Objects are handled by wrap-object-as-array, never by wrap-array
-	if (typeof value === "object") return value;
-
-	// Wrap bare primitives (strings, numbers, booleans)
-	return [value];
-}
-
-/**
- * Wrap a single object in an array when the key suggests an array is expected.
- * Example: `edits: {oldText:"x", newText:"y"}` → `edits: [{oldText:"x", newText:"y"}]`
- * Handles models that omit the outer array when there's only one item.
- */
-function wrapObjectAsArrayIfNeeded(value: unknown, _key: string): unknown {
-	// Already an array — nothing to do
-	if (Array.isArray(value)) return value;
-
-	// Object (but not null) → wrap in array
-	if (typeof value === "object" && value !== null) {
-		return [value];
-	}
-
-	return value;
-}
-
-// ─── Relational Defaults ──────────────────────────────────────────────────
-
-/**
- * Apply relational defaults for read/read_file tools.
- *
- * Relational invariant: if offset is provided, limit should also be present (and vice versa).
- * Models often provide only one, causing unnecessary errors.
- *
- * Instead of failing, we extend semantics:
- *   - `limit` alone → assume `offset = 1` (read from the start)
- *   - `offset` alone → assume `limit = 2000` (reasonable default)
- */
-function applyRelationalDefaults(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
-	if (toolName !== "read" && toolName !== "read_file") return input;
-
-	const result = { ...input } as Record<string, unknown>;
-
-	if (result.limit !== undefined && result.offset === undefined) {
-		result.offset = 1;
-	}
-	if (result.offset !== undefined && result.limit === undefined) {
-		result.limit = 2000;
-	}
-
-	return result;
-}
-
-// ─── Field-Level Repair Logic ─────────────────────────────────────────────
-
-/**
- * Determine if a field should be repaired based on its key.
- * Returns the repair strategies to apply.
- */
-type RepairAction =
-	| "parse-json"
-	| "wrap-array"
-	| "wrap-object-as-array"
-	| "clean-path"
-	| "strip-nulls"
-	| "none";
-
-function classifyField(key: string): RepairAction[] {
-	const lower = key.toLowerCase();
-	const actions: RepairAction[] = [];
-
-	// Path fields: clean markdown links + normalize
-	if (PATH_FIELD_NAMES.has(key) || lower.endsWith("path") || lower.endsWith("_path") || lower.endsWith("dir")) {
-		actions.push("clean-path");
-	}
-
-	// Array fields: parse JSON strings, wrap bare values
-	// Only trigger on explicit set membership or known plural suffixes
-	if (
-		ARRAY_FIELD_NAMES.has(key) ||
-		lower.endsWith("_list") ||
-		lower.endsWith("list") ||
-		lower.endsWith("_names") ||
-		lower.endsWith("names") ||
-		lower.endsWith("_items") ||
-		lower.endsWith("items")
-	) {
-		actions.push("parse-json");
-		actions.push("wrap-array");
-		actions.push("wrap-object-as-array");
-	}
-
-	// Explicit array suffix patterns
-	if (lower.endsWith("_array") || lower.endsWith("array")) {
-		actions.push("parse-json", "wrap-array", "wrap-object-as-array");
-	}
-
-	return actions;
-}
-
-function isContentField(key: string): boolean {
-	const lower = key.toLowerCase();
-	if (CONTENT_FIELD_NAMES.has(key)) return true;
-	// Heuristic: fields where the full stem ends in Text, content, body, message describe content
-	// Must match exactly (e.g. "oldText", "newText", "body") not partial ("context", "longtext" is fine)
-	if (lower === "context") return false; // NOT content — it's a number
-	if (lower.endsWith("text") || lower.endsWith("content") || lower.endsWith("body")) return true;
-	return false;
-}
-
-function isNumberField(key: string): boolean {
-	const lower = key.toLowerCase();
-	if (NUMBER_FIELD_NAMES.has(key)) return true;
-	if (lower.startsWith("max") || lower.startsWith("min") || lower.endsWith("limit") ||
-		lower.endsWith("timeout") || lower.endsWith("count") || lower.endsWith("_ms") ||
-		lower.endsWith("depth") || lower.endsWith("level") || lower.endsWith("index") ||
-		lower.endsWith("_id")) return true;
-	return false;
-}
 
 /**
  * Apply repairs to a single field value based on its key.
@@ -376,6 +103,30 @@ function repairFieldValue(
 				if (wrapped !== value) {
 					repairs.push(`${parentKey}.${key}: wrapped bare "${String(value).slice(0, 30)}" → array`);
 					value = wrapped;
+				}
+				break;
+			}
+			case "split-string-to-array": {
+				const split = trySplitStringToArray(value);
+				if (split !== value && Array.isArray(split)) {
+					repairs.push(`${parentKey}.${key}: split string "${String(value).slice(0, 40)}" → array`);
+					value = split;
+				}
+				break;
+			}
+			case "coerce-boolean": {
+				const coerced = coerceToBoolean(value);
+				if (coerced !== value) {
+					repairs.push(`${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`);
+					value = coerced;
+				}
+				break;
+			}
+			case "coerce-number": {
+				const coerced = coerceToNumber(value);
+				if (coerced !== value) {
+					repairs.push(`${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`);
+					value = coerced;
 				}
 				break;
 			}

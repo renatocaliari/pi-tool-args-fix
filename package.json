@@ -1,11 +1,28 @@
 {
-  "name": "pi-tool-args-fix",
+  "name": "pi-tool-repair-layer",
   "version": "0.1.0",
   "description": "Intercepts tool calls and repairs common LLM argument mistakes before execution — null stripping, JSON parsing, array wrapping, markdown path cleanup, and relational defaults.",
-  "keywords": ["pi-package", "pi-extension", "tool-calling", "repair", "llm"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tool-calling",
+    "repair",
+    "llm"
+  ],
   "author": "Cali",
   "license": "MIT",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1",
+    "@vitest/coverage-v8": "^3.1.1"
+  },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

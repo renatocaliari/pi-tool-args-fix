@@ -1,4 +1,4 @@
-# pi-tool-args-fix
+# pi-tool-repair-layer
 
 **A pi extension that intercepts `tool_call` events and fixes common LLM argument mistakes before tools execute.**
 
@@ -6,7 +6,7 @@ Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for tool
 
 Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/2050956678502420612).
 
-## The Four Failure Modes (and One Bonus)
+## The Failure Modes We Fix
 
 | # | What the model emits | What the tool needs | Repair |
 |---|---------------------|---------------------|--------|
@@ -16,6 +16,10 @@ Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/205095667850242061
 | 4 | `function_names: "main"` | `function_names: ["main"]` | Wrap bare string/number → array |
 | 5 | `path: "[notes.md](http://notes.md)"` | `path: "notes.md"` | Unwrap markdown auto-links from paths |
 | 6 | `{limit: 30}` | `{offset: 1, limit: 30}` | Relational defaults for read/read_file |
+| 7 | `tags: "admin, user"` | `tags: ["admin", "user"]` | Split comma/space-separated strings → array |
+| 8 | `name: "null"` | omit the field entirely | Strip null-like strings ("null", "none", "n/a") |
+| 9 | `strict: "true"` | `strict: true` | Coerce boolean strings ("true", "yes", "1") |
+| 10 | `limit: "42"` | `limit: 42` | Coerce number strings ("42", "3.14") |
 
 ## Architecture
 
@@ -26,20 +30,24 @@ Repair order matters:
 2. `parse-json` — string → object/array
 3. `wrap-object-as-array` — `{...}` → `[{...}]`
 4. `wrap-array` — bare value → `[value]`
-5. Recurse into nested structures after type changes
+5. `split-string-to-array` — `"foo, bar"` → `["foo", "bar"]`
+6. `null-like-to-undefined` — strip "null", "none", "n/a" strings
+7. `coerce-boolean` — "true"/"yes"/"1" → true
+8. `coerce-number` — "42"/"3.14" → 42/3.14
+9. Recurse into nested structures after type changes
 
 Every repair is logged with `tool_input_repaired:<toolName>` via `console.error` and surfaced in the TUI status bar. View cumulative stats with `/repair-stats`.
 
 ## Install
 
 ```bash
-pi install git:github.com/renatocaliari/pi-tool-args-fix@v0.1.0
+pi install git:github.com/renatocaliari/pi-tool-repair-layer@v0.1.0
 ```
 
 Or from a local clone:
 
 ```bash
-pi install ./path/to/pi-tool-args-fix
+pi install ./path/to/pi-tool-repair-layer
 ```
 
 ## Usage
