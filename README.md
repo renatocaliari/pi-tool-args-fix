@@ -20,7 +20,7 @@ Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/205095667850242061
 | 8 | `name: "null"` | omit the field entirely | Strip null-like strings ("null", "none", "n/a") |
 | 9 | `strict: "true"` | `strict: true` | Coerce boolean strings ("true", "yes", "1") |
 | 10 | `limit: "42"` | `limit: 42` | Coerce number strings ("42", "3.14") |
-| 11 | 11 | `read ~/dir/` → EISDIR | `📁 Directory: listing` | Fallback: `fs.readdir()` and return listing with hint |
+| 11 | `read ~/dir/` → EISDIR | `📁 Directory: listing` | Fallback: `fs.readdir()` and return listing with hint |
 
 ## Architecture
 

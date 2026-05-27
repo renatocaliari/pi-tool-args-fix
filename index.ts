@@ -104,7 +104,7 @@ function repairFieldValue(
 				break;
 			}
 			case "wrap-array": {
-				const wrapped = wrapAsArrayIfNeeded(value, key);
+				const wrapped = wrapAsArrayIfNeeded(value);
 				if (wrapped !== value) {
 					repairs.push(`${parentKey}.${key}: wrapped bare "${String(value).slice(0, 30)}" → array`);
 					value = wrapped;
@@ -192,6 +192,12 @@ function repairObjectFieldsWithTrace(
 		// Skip null values (strip nulls)
 		if (value === null) {
 			allRepairs.push(`${parentKey}.${key}: stripped null (optional field omitted)`);
+			continue;
+		}
+
+		// Skip null-like strings ("null", "none", "n/a", etc.)
+		if (isNullLikeString(value)) {
+			allRepairs.push(`${parentKey}.${key}: stripped null-like string "${String(value).slice(0, 30)}" (optional field omitted)`);
 			continue;
 		}
 
