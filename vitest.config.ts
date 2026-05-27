@@ -7,7 +7,7 @@ export default defineConfig({
     include: ["**/*.test.ts"],
     coverage: {
       provider: "v8",
-      include: ["repairs.ts"],
+      include: ["repairs.ts", "stats.ts"],
       thresholds: {
         // Based on cali-product-testing-ai-code: critical paths = 70% min
         lines: 70,
