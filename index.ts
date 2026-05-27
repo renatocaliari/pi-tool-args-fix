@@ -25,14 +25,31 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { test } from "./test-import.js";
+import {
+	PATH_FIELD_NAMES,
+	ARRAY_FIELD_NAMES,
+	BOOLEAN_FIELD_NAMES,
+	CONTENT_FIELD_NAMES,
+	NUMBER_FIELD_NAMES,
+	unwrapMarkdownLink,
+	cleanPathValue,
+	tryParseJsonString,
+	wrapAsArrayIfNeeded,
+	wrapObjectAsArrayIfNeeded,
+	applyRelationalDefaults,
+	classifyField,
+	isNullLikeString,
+	trySplitStringToArray,
+	coerceToBoolean,
+	coerceToNumber,
+	isContentField,
+	isNumberField,
+} from "./repairs.js";
+import { createStats, recordRepairs, formatStats } from "./stats.js";
 
-export default function (pi: ExtensionAPI) {
-	// Stub: return undefined for all tool calls
-	pi.on("tool_call", async (_event, _ctx) => {
-		return undefined;
-	});
-}/**
+
+
+/**
  * Apply repairs to a single field value based on its key.
  * Returns [repaired value, any repair descriptions].
  */
