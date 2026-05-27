@@ -207,19 +207,21 @@ function repairObjectFieldsWithTrace(
 // ─── Main Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	// Track repair statistics per (tool, model)
-	const repairStats = new Map<string, { count: number; details: string[] }>();
+	// Track repair statistics per repair type
+	const repairTypeStats = new Map<string, number>();
+	let totalRepairs = 0;
 
-	function recordRepair(toolName: string, modelLabel: string, repairs: string[]) {
-		const key = `${modelLabel}::${toolName}`;
-		const entry = repairStats.get(key) || { count: 0, details: [] };
-		entry.count++;
-		entry.details.push(...repairs);
-		// Keep only last 20 detail lines per key
-		if (entry.details.length > 20) {
-			entry.details = entry.details.slice(-20);
+	function recordRepair(repairs: string[]) {
+		totalRepairs++;
+		for (const detail of repairs) {
+			// Extract repair type from detail like "path.field: parsed JSON string..."
+			const match = detail.match(/: (stripped null|parsed JSON|wrapped bare|wrapped object|unwrapped markdown|split string|coerced boolean|coerced number)/);
+			if (match) {
+				const repairType = match[1];
+				const count = repairTypeStats.get(repairType) || 0;
+				repairTypeStats.set(repairType, count + 1);
+			}
 		}
-		repairStats.set(key, entry);
 	}
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -266,7 +268,7 @@ export default function (pi: ExtensionAPI) {
 			// recursive repair, so we compute a summary diff)
 			const repairSummary = summarizeRepairs(originalInput, withDefaults);
 
-			recordRepair(event.toolName, modelLabel, repairSummary);
+			recordRepair(repairSummary);
 
 			console.error(
 				`[repair-layer] tool_input_repaired:${event.toolName} ` +
@@ -303,27 +305,39 @@ export default function (pi: ExtensionAPI) {
 
 	// Command: view repair stats
 	pi.registerCommand("repair-stats", {
-		description: "Show repair layer statistics",
+		description: "Show repair layer statistics for this session",
 		handler: async (_args, ctx) => {
-			if (repairStats.size === 0) {
-				ctx.ui.notify("No repairs applied so far.", "info");
+			if (totalRepairs === 0) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("No repairs applied in this session.", "info");
+				} else {
+					console.log("No repairs applied in this session.");
+				}
 				return;
 			}
 
+			// Sort by count descending
+			const sorted = Array.from(repairTypeStats.entries())
+				.sort((a, b) => b[1] - a[1]);
+
+			// Calculate max width for alignment
+			const maxTypeLen = Math.max(...sorted.map(([type]) => type.length));
+
 			const lines: string[] = [];
-			for (const [key, entry] of repairStats.entries()) {
-				lines.push(`${key}: ${entry.count} repairs`);
+			for (const [type, count] of sorted) {
+				const pct = Math.round((count / totalRepairs) * 100);
+				lines.push(`${type.padEnd(maxTypeLen)}  ${String(count).padStart(5)}  ${String(pct).padStart(3)}%`);
 			}
 
+			const header = `${"Repair Type".padEnd(maxTypeLen)}  ${"Count".padStart(5)}  ${"%".padStart(3)}`;
+			const separator = "-".repeat(header.length);
+			const output = [header, separator, ...lines, separator, `${"Total".padEnd(maxTypeLen)}  ${String(totalRepairs).padStart(5)}`].join("\n");
+
 			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Repair Stats:\n${lines.join("\n")}\n\nTotal tools repaired: ${repairStats.size}`,
-					"info",
-				);
+				ctx.ui.notify(`📊 Repair Stats (this session)\n\n${output}`, "info");
 			} else {
-				console.log("Repair Stats:");
-				for (const line of lines) console.log(`  ${line}`);
-				console.log(`  Total: ${repairStats.size}`);
+				console.log("📊 Repair Stats (this session)");
+				console.log(output);
 			}
 		},
 	});

@@ -41,7 +41,7 @@ Every repair is logged with `tool_input_repaired:<toolName>` via `console.error`
 ## Install
 
 ```bash
-pi install git:github.com/renatocaliari/pi-tool-repair-layer@v0.1.0
+pi install git:github.com/renatocaliari/pi-tool-repair-layer
 ```
 
 Or from a local clone:
@@ -52,7 +52,32 @@ pi install ./path/to/pi-tool-repair-layer
 
 ## Usage
 
-Once installed, repairs are automatic — no configuration needed. Every tool call is intercepted, validated, and repaired before execution. The `/repair-stats` command shows per-model, per-tool repair counts.
+Once installed, repairs are automatic — no configuration needed. Every tool call is intercepted, validated, and repaired before execution.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/repair-stats` | Show repair statistics for the current session |
+
+### Example Output
+
+```
+> /repair-stats
+
+📊 Repair Stats (this session)
+
+Repair Type            Count    %
+--------------------------------------
+parsed JSON              12   38%
+wrapped bare              8   25%
+unwrapped markdown        5   16%
+coerced boolean           3    9%
+split string              2    6%
+coerced number            1    3%
+--------------------------------------
+Total                    31
+```
 
 ## Why This Exists
 
