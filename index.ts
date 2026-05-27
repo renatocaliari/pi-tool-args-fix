@@ -45,6 +45,7 @@ import {
 	isContentField,
 	isNumberField,
 } from "./repairs.js";
+import { createStats, recordRepairs, formatStats } from "./stats.js";
 
 
 
@@ -207,22 +208,7 @@ function repairObjectFieldsWithTrace(
 // ─── Main Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	// Track repair statistics per repair type
-	const repairTypeStats = new Map<string, number>();
-	let totalRepairs = 0;
-
-	function recordRepair(repairs: string[]) {
-		totalRepairs++;
-		for (const detail of repairs) {
-			// Extract repair type from detail like "path.field: parsed JSON string..."
-			const match = detail.match(/: (stripped null|parsed JSON|wrapped bare|wrapped object|unwrapped markdown|split string|coerced boolean|coerced number)/);
-			if (match) {
-				const repairType = match[1];
-				const count = repairTypeStats.get(repairType) || 0;
-				repairTypeStats.set(repairType, count + 1);
-			}
-		}
-	}
+	const stats = createStats();
 
 	pi.on("tool_call", async (event, ctx) => {
 		// Only repair known tools (skip custom/unknown tools to be safe)
@@ -268,7 +254,7 @@ export default function (pi: ExtensionAPI) {
 			// recursive repair, so we compute a summary diff)
 			const repairSummary = summarizeRepairs(originalInput, withDefaults);
 
-			recordRepair(repairSummary);
+			recordRepairs(stats, repairSummary);
 
 			console.error(
 				`[repair-layer] tool_input_repaired:${event.toolName} ` +
@@ -307,31 +293,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("repair-stats", {
 		description: "Show repair layer statistics for this session",
 		handler: async (_args, ctx) => {
-			if (totalRepairs === 0) {
-				if (ctx.hasUI) {
-					ctx.ui.notify("No repairs applied in this session.", "info");
-				} else {
-					console.log("No repairs applied in this session.");
-				}
-				return;
-			}
-
-			// Sort by count descending
-			const sorted = Array.from(repairTypeStats.entries())
-				.sort((a, b) => b[1] - a[1]);
-
-			// Calculate max width for alignment
-			const maxTypeLen = Math.max(...sorted.map(([type]) => type.length));
-
-			const lines: string[] = [];
-			for (const [type, count] of sorted) {
-				const pct = Math.round((count / totalRepairs) * 100);
-				lines.push(`${type.padEnd(maxTypeLen)}  ${String(count).padStart(5)}  ${String(pct).padStart(3)}%`);
-			}
-
-			const header = `${"Repair Type".padEnd(maxTypeLen)}  ${"Count".padStart(5)}  ${"%".padStart(3)}`;
-			const separator = "-".repeat(header.length);
-			const output = [header, separator, ...lines, separator, `${"Total".padEnd(maxTypeLen)}  ${String(totalRepairs).padStart(5)}`].join("\n");
+			const output = formatStats(stats);
 
 			if (ctx.hasUI) {
 				ctx.ui.notify(`📊 Repair Stats (this session)\n\n${output}`, "info");
@@ -379,6 +341,14 @@ function summarizeRepairs(
 				details.push(`${fullKey}: wrapped bare → array`);
 			} else if (typeof oldValue === "object" && oldValue !== null && Array.isArray(newValue)) {
 				details.push(`${fullKey}: wrapped object → array`);
+			} else if (typeof oldValue === "boolean" || typeof newValue === "boolean") {
+				const oldPreview = String(oldValue);
+				const newPreview = String(newValue);
+				details.push(`${fullKey}: coerced boolean "${oldPreview}" → ${newPreview}`);
+			} else if (typeof oldValue === "number" || typeof newValue === "number") {
+				const oldPreview = String(oldValue);
+				const newPreview = String(newValue);
+				details.push(`${fullKey}: coerced number "${oldPreview}" → ${newPreview}`);
 			} else if (typeof oldValue === "string" && typeof newValue === "string") {
 				const oldPreview = oldValue.length > 40 ? oldValue.slice(0, 40) + "..." : oldValue;
 				const newPreview = newValue.length > 40 ? newValue.slice(0, 40) + "..." : newValue;
