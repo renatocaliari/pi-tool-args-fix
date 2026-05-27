@@ -266,10 +266,11 @@ export default function (pi: ExtensionAPI) {
 
 			// Mutate input in place (pi supports this)
 			// Clear all keys and reassign from repaired
-			for (const key of Object.keys(event.input as object)) {
-				delete (event.input as Record<string, unknown>)[key];
+			const inputObj = event.input as Record<string, unknown>;
+			for (const key of Object.keys(inputObj)) {
+				delete inputObj[key];
 			}
-			Object.assign(event.input, withDefaults);
+			Object.assign(inputObj, withDefaults);
 
 			// Notify user in UI
 			if (ctx.hasUI) {
