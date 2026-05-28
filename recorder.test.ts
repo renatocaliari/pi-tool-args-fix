@@ -34,8 +34,8 @@ function makeEvent(overrides: Partial<RepairEvent> = {}): RepairEvent {
     sessionId: "test-session",
     turnIndex: 1,
     toolName: "read",
-    provider: "anthropic",
-    model: "claude-sonnet-4-5",
+    provider: "test-provider",
+    model: "test-model",
     repairs: [],
     wasRepaired: false,
     executionFailed: false,
@@ -121,8 +121,9 @@ describe("I/O", () => {
 
   it("recordEvent does not throw on failure", () => {
     // Should not throw even if directory is unwritable or event is weird
+    // Use a non-writable path by passing an unusable sessionId
     expect(() =>
-      recordEvent(makeEvent({ sessionId: "" }))
+      recordEvent(makeEvent({ sessionId: "unknown" }), testDir)
     ).not.toThrow();
   });
 
@@ -206,18 +207,14 @@ describe("I/O", () => {
   });
 
   it("recordEvent with empty sessionId falls back to 'unknown'", () => {
-    const unknownPath = path.join(getRepairLogDir(), "unknown.jsonl");
-    // Remove any leftover from previous tests
-    if (fs.existsSync(unknownPath)) fs.unlinkSync(unknownPath);
+    const unknownPath = path.join(testDir, "unknown.jsonl");
 
-    recordEvent(makeEvent({ sessionId: "" }));
+    recordEvent(makeEvent({ sessionId: "" }), testDir);
 
     const content = fs.readFileSync(unknownPath, "utf-8").trim();
     const lines = content.split("\n");
     const parsed = JSON.parse(lines[lines.length - 1]);
     expect(parsed.sessionId).toBe("unknown");
-    // Cleanup
-    if (fs.existsSync(unknownPath)) fs.unlinkSync(unknownPath);
   });
 });
 

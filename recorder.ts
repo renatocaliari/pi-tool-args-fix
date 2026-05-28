@@ -132,12 +132,15 @@ export function ensureDir(): void {
 }
 
 /** Append one event as a JSON line. Non-blocking; fire-and-forget. */
-export function recordEvent(event: RepairEvent): void {
+export function recordEvent(event: RepairEvent, logDir?: string): void {
   try {
     const sid = event.sessionId || "unknown";
-    ensureDir();
+    const dir = logDir ?? getRepairLogDir();
+    fs.mkdirSync(dir, { recursive: true });
     const line = JSON.stringify({ ...event, sessionId: sid }) + "\n";
-    const logPath = sessionLogPath(sid);
+    const logPath = logDir
+      ? path.join(logDir, `${sid}.jsonl`)
+      : sessionLogPath(sid);
     fs.appendFileSync(logPath, line, "utf-8");
   } catch {
     // Silently ignore write failures — logging should never break the agent
