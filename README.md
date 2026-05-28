@@ -58,7 +58,7 @@ Repair order matters:
 9. `coerce-number` — "42"/"3.14" → 42/3.14
 10. Recurse into nested structures after type changes
 
-Every repair is logged with `tool_input_repaired:<toolName>` via `console.error` and surfaced in the TUI status bar. View cumulative stats with `/repair-stats`.
+Every repair is logged with `tool_input_repaired:<toolName>` via `console.error`, surfaced in the TUI status bar, and persisted to JSONL at `.pi/repair-log/<sessionId>.jsonl`.
 
 ## Install
 
@@ -80,7 +80,9 @@ Once installed, repairs are automatic — no configuration needed. Every tool ca
 
 | Command | Description |
 |---------|-------------|
-| `/repair-stats` | Show repair statistics for the current session |
+| `/repair-stats` | Show in-memory repair statistics for the current session |
+| `/repair-stats-global` | Show aggregated repair stats across all logged sessions |
+| `/repair-gaps` | Show error patterns that lack repair coverage (blindspots) |
 
 ### Example Output
 
@@ -99,6 +101,88 @@ split string              2    6%
 coerced number            1    3%
 --------------------------------------
 Total                    31
+```
+
+```
+> /repair-gaps
+
+🔍 Repair Blindspots (unfixed error patterns)
+────────────────────────────────────────────
+
+  [ENOENT] web_search — 5x
+  ├─ Models: anthropic/claude-sonnet-4-5, openai/gpt-4o
+  ├─ First: 2026-05-28T10:00:00.000Z
+  ├─ Last:  2026-05-28T11:00:00.000Z
+  ├─ Example: input keys: [query]
+  └─ 💡 Consider fuzzy path matching: retry with relative path, check common parent dirs.
+
+Total: 1 blindspot(s) detected.
+```
+
+## 📊 Event Logging
+
+Every `tool_call` and `tool_result` event is recorded to a JSONL file for
+post-session analysis.
+
+### Storage Location
+
+```
+.pi/repair-log/
+  ├── <sessionId>.jsonl       ← append-only events
+  └── ... (one file per session)
+```
+
+### Event Schema (JSON, one object per line)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ts` | string | ISO 8601 timestamp |
+| `eventType` | `"tool_call"` / `"tool_result"` | Phase of the event |
+| `sessionId` | string | pi session identifier |
+| `turnIndex` | number | Sequential event counter |
+| `toolName` | string | Tool that was called (e.g. `read`, `edit`) |
+| `provider` | string | Model provider (e.g. `anthropic`) |
+| `model` | string | Model id (e.g. `claude-sonnet-4-5`) |
+| `repairs` | string[] | What repairs were applied |
+| `wasRepaired` | boolean | Whether any repair was applied |
+| `executionFailed` | boolean | Whether the tool execution failed |
+| `executionErrorType` | string | Error category (`ENOENT`, `EACCES`, `timeout`, …) |
+| `wasHandled` | boolean | Whether the extension handled the error (e.g. directory fallback) |
+| `handleType` | string | Handler name (`directory_fallback`, …) |
+| `blindspotCategory` | string | Non-null when this error could benefit from a new repair |
+| `inputKeys` | string[] | Structural fingerprint: input field names |
+| `inputNullKeys` | string[] | Fields that were sent as `null` |
+| `inputExtraProps` | string[] | Extra properties stripped from array items |
+
+### Retention
+
+Session logs are retained for the last **50 sessions**, pruned automatically at
+extension startup. Storage is minimal (~10KB per session).
+
+### DuckDB Integration
+
+Since the log format is standard JSONL, you can query across sessions with DuckDB:
+
+```sql
+-- Count errors by tool and category
+SELECT
+  json_extract_string(line, '$.toolName') AS tool,
+  json_extract_string(line, '$.executionErrorType') AS error_type,
+  count(*) AS cnt
+FROM read_text('.pi/repair-log/*.jsonl')
+GROUP BY tool, error_type
+ORDER BY cnt DESC;
+```
+
+Or combine with shell to analyze live:
+
+```bash
+# Most common repair types
+jq -r '.repairs[]' .pi/repair-log/*.jsonl | sort | uniq -c | sort -rn | head -10
+
+# Error rate per model
+jq -r 'select(.eventType == "tool_result") | "\(.provider)/\(.model) \(.executionFailed)"'
+  .pi/repair-log/*.jsonl | awk '{failed+=$2; total+=1} END {printf "%.1f%% (%d/%d)\n", failed/total*100, failed, total}'
 ```
 
 ## Why This Exists

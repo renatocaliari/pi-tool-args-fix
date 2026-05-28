@@ -46,11 +46,21 @@ import {
 	coerceToNumber,
 	isContentField,
 	isNumberField,
-	isEisdirError,
 	extractTextContent,
 	stripExtraPropertiesFromItems,
 } from "./repairs.js";
 import { createStats, recordRepairs, formatStats } from "./stats.js";
+import {
+	recordEvent,
+	readAllEvents,
+	aggregateStats,
+	computeBlindspots,
+	pruneOldSessions,
+	classifyErrorType,
+	formatSessionStats,
+	formatGlobalStats,
+	formatBlindspots,
+} from "./recorder.js";
 
 
 
@@ -228,6 +238,13 @@ function repairObjectFieldsWithTrace(
 
 export default function (pi: ExtensionAPI) {
 	const stats = createStats();
+	let eventSeq = 0;
+
+	// Prune old session logs at startup
+	const pruned = pruneOldSessions(50);
+	if (pruned > 0) {
+		console.log(`[repair-layer] pruned ${pruned} old session log(s) (retention: 50)`);
+	}
 
 	pi.on("tool_call", async (event, ctx) => {
 		// Only repair known tools (skip custom/unknown tools to be safe)
@@ -260,18 +277,17 @@ export default function (pi: ExtensionAPI) {
 		// Step 2: Apply relational defaults
 		const withDefaults = applyRelationalDefaults(repaired);
 
-		// Step 4: Check if anything changed
+		// Step 4: Check if anything changed & collect repair descriptions
 		const repairedJson = JSON.stringify(withDefaults);
+		const repairSummary = originalJson !== repairedJson
+			? summarizeRepairs(originalInput, withDefaults)
+			: [];
 
 		if (originalJson !== repairedJson) {
 			// Log repairs
 			const modelLabel = ctx.model
 				? `${ctx.model.provider}/${ctx.model.id}`
 				: "unknown";
-
-			// Collect repair descriptions (we can't easily thread them through the
-			// recursive repair, so we compute a summary diff)
-			const repairSummary = summarizeRepairs(originalInput, withDefaults);
 
 			recordRepairs(stats, repairSummary);
 
@@ -306,78 +322,166 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// Record event for post-session analysis
+		eventSeq++;
+		const callSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+		recordEvent({
+			ts: new Date().toISOString(),
+			eventType: "tool_call",
+			sessionId: callSessionId,
+			turnIndex: eventSeq,
+			toolName: event.toolName,
+			provider: ctx.model?.provider ?? "unknown",
+			model: ctx.model?.id ?? "unknown",
+			repairs: repairSummary,
+			wasRepaired: originalJson !== repairedJson,
+			executionFailed: false,
+			executionErrorType: null,
+			wasHandled: false,
+			handleType: null,
+			blindspotCategory: null,
+			inputKeys: Object.keys(originalInput),
+			inputNullKeys: Object.entries(originalInput)
+				.filter(([_, v]) => v === null)
+				.map(([k]) => k),
+			inputExtraProps: [],
+		});
+
 		return undefined; // let tool execute
 	});
 
-	// ─── tool_result: Directory fallback for read tool ───────────────
+	// ─── tool_result: Execution error recording + directory fallback ──
 	pi.on("tool_result", async (event, ctx) => {
-		if (event.toolName !== "read") return undefined;
-		if (!event.isError) return undefined;
+		// ── Phase 1: Extract error info ──────────────────────────────
+		let executionErrorType: string | null = null;
+		let blindspotCategory: string | null = null;
+		const hasError = event.isError ?? false;
 
-		// Check if error is EISDIR
-		const errorText = extractTextContent(event.content);
-		if (!errorText || !isEisdirError(errorText)) return undefined;
-
-		// Get the path from the original input
-		const inputPath = (event.input as Record<string, unknown>)?.path;
-		if (typeof inputPath !== "string" || !inputPath) return undefined;
-
-		// Resolve the path
-		let resolvedPath = inputPath;
-		if (resolvedPath.startsWith("~/")) {
-			const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
-			resolvedPath = path.join(home, resolvedPath.slice(2));
+		if (hasError) {
+			const errorText = extractTextContent(event.content);
+			executionErrorType = classifyErrorType(errorText);
+			blindspotCategory = executionErrorType;
 		}
 
-		try {
-			const stat = await fs.stat(resolvedPath);
-			if (!stat.isDirectory()) return undefined;
+		// ── Phase 2: Handle directory fallback (read tool EISDIR) ───
+		let wasHandled = false;
+		let handleType: string | null = null;
 
-			// It's a directory — list its contents
-			const entries = await fs.readdir(resolvedPath);
-			const listing = entries.map((e) => `  ${e}`).join("\n");
-			const dirName = path.basename(resolvedPath);
+		if (event.toolName === "read" && hasError && executionErrorType === "EISDIR") {
+			// Get the path from the original input
+			const inputPath = (event.input as Record<string, unknown>)?.path;
+			if (typeof inputPath === "string" && inputPath) {
+				// Resolve the path
+				let resolvedPath = inputPath;
+				if (resolvedPath.startsWith("~/")) {
+					const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
+					resolvedPath = path.join(home, resolvedPath.slice(2));
+				}
 
-			const listingContent = [
-				`📁 Directory: ${resolvedPath}`,
-				``,
-				"Contents:",
-				listing,
-				``,
-				`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
-				``,
-				`ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.`,
-			].join("\n");
+				try {
+					const stat = await fs.stat(resolvedPath);
+					if (stat.isDirectory()) {
+						// It's a directory — list its contents
+						const entries = await fs.readdir(resolvedPath);
+						const listing = entries.map((e) => `  ${e}`).join("\n");
+						const dirName = path.basename(resolvedPath);
 
-			// Log and track stats
-			const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
-			console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
-			recordRepairs(stats, [detail]);
+						const listingContent = [
+							`📁 Directory: ${resolvedPath}`,
+							``,
+							"Contents:",
+							listing,
+							``,
+							`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
+							``,
+							`ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.`,
+						].join("\n");
 
-			if (ctx.hasUI) {
-				ctx.ui.setStatus(
-					"repair-layer",
-					ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
-				);
-				setTimeout(() => {
-					ctx.ui.setStatus("repair-layer", undefined);
-				}, 3000);
+						// Log and track stats
+						const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
+						console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
+						recordRepairs(stats, [detail]);
+
+						if (ctx.hasUI) {
+							ctx.ui.setStatus(
+								"repair-layer",
+								ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
+							);
+							setTimeout(() => {
+								ctx.ui.setStatus("repair-layer", undefined);
+							}, 3000);
+						}
+
+						wasHandled = true;
+						handleType = "directory_fallback";
+						blindspotCategory = null; // No longer a blindspot
+
+						// Record handled event
+						eventSeq++;
+						const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+						recordEvent({
+							ts: new Date().toISOString(),
+							eventType: "tool_result",
+							sessionId: resSessionId,
+							turnIndex: eventSeq,
+							toolName: event.toolName,
+							provider: ctx.model?.provider ?? "unknown",
+							model: ctx.model?.id ?? "unknown",
+							repairs: [],
+							wasRepaired: false,
+							executionFailed: false,
+							executionErrorType: null,
+							wasHandled: true,
+							handleType: "directory_fallback",
+							blindspotCategory: null,
+							inputKeys: Object.keys(event.input ?? {}),
+							inputNullKeys: [],
+							inputExtraProps: [],
+						});
+
+						// Return patched result: clear error, provide listing
+						return {
+							content: [{ type: "text", text: listingContent }],
+							isError: false,
+						};
+					}
+					// Not a directory — fall through to error recording
+				} catch {
+					// stat or readdir failed — fall through to error recording
+				}
 			}
-
-			// Return patched result: clear error, provide listing
-			return {
-				content: [{ type: "text", text: listingContent }],
-				isError: false,
-			};
-		} catch {
-			// stat or readdir failed — don't interfere, let original error through
-			return undefined;
+			// Input path was invalid or stat failed — fall through to error recording
 		}
+
+		// ── Phase 3: Record event (error or success) ──────────────────
+		eventSeq++;
+		const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+		recordEvent({
+			ts: new Date().toISOString(),
+			eventType: "tool_result",
+			sessionId: resSessionId,
+			turnIndex: eventSeq,
+			toolName: event.toolName,
+			provider: ctx.model?.provider ?? "unknown",
+			model: ctx.model?.id ?? "unknown",
+			repairs: [],
+			wasRepaired: false,
+			executionFailed: hasError,
+			executionErrorType,
+			wasHandled,
+			handleType,
+			blindspotCategory,
+			inputKeys: Object.keys(event.input ?? {}),
+			inputNullKeys: [],
+			inputExtraProps: [],
+		});
+
+		return undefined;
 	});
 
-	// ─── Command: view repair stats ─────────────────────────────────
+	// ─── Command: in-memory session repair stats ─────────────────────
 	pi.registerCommand("repair-stats", {
-		description: "Show repair layer statistics for this session",
+		description: "Show repair layer statistics for this session (in-memory)",
 		handler: async (_args, ctx) => {
 			const output = formatStats(stats);
 
@@ -385,6 +489,43 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`📊 Repair Stats (this session)\n\n${output}`, "info");
 			} else {
 				console.log("📊 Repair Stats (this session)");
+				console.log(output);
+			}
+		},
+	});
+
+	// ─── Command: global aggregate across all sessions ────────────────
+	pi.registerCommand("repair-stats-global", {
+		description: "Show aggregated repair stats across all logged sessions",
+		handler: async (_args, ctx) => {
+			const allEvents = readAllEvents();
+			const agg = aggregateStats(allEvents);
+
+			// Count unique sessions
+			const sessionIds = new Set(allEvents.map((e) => e.sessionId));
+
+			const footer = `\nSession logs: ${sessionIds.size} (retention 50, auto-pruned at startup)`;
+			const output = formatGlobalStats(agg, sessionIds.size) + footer;
+
+			if (ctx.hasUI) {
+				ctx.ui.notify(`${output}`, "info");
+			} else {
+				console.log(output);
+			}
+		},
+	});
+
+	// ─── Command: blindspots (errors without repair coverage) ────────
+	pi.registerCommand("repair-gaps", {
+		description: "Show error patterns that lack repair coverage (blindspots)",
+		handler: async (_args, ctx) => {
+			const allEvents = readAllEvents();
+			const blindspots = computeBlindspots(allEvents);
+			const output = formatBlindspots(blindspots);
+
+			if (ctx.hasUI) {
+				ctx.ui.notify(`${output}`, "info");
+			} else {
 				console.log(output);
 			}
 		},
@@ -447,5 +588,3 @@ function summarizeRepairs(
 
 	return details;
 }
-
-
