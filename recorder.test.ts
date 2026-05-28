@@ -252,14 +252,14 @@ describe("aggregateStats", () => {
 
   it("tracks byModel stats", () => {
     const events = [
-      makeEvent({ provider: "anthropic", model: "claude-sonnet-4-5" }),
-      makeEvent({ provider: "anthropic", model: "claude-sonnet-4-5" }),
-      makeEvent({ provider: "openai", model: "gpt-4o" }),
+      makeEvent({ provider: "provider-a", model: "model-a" }),
+      makeEvent({ provider: "provider-a", model: "model-a" }),
+      makeEvent({ provider: "provider-b", model: "model-b" }),
     ];
 
     const stats = aggregateStats(events);
-    expect(stats.byModel["anthropic/claude-sonnet-4-5"]).toBe(2);
-    expect(stats.byModel["openai/gpt-4o"]).toBe(1);
+    expect(stats.byModel["provider-a/model-a"]).toBe(2);
+    expect(stats.byModel["provider-b/model-b"]).toBe(1);
   });
 
   it("tracks byRepairType from repair descriptions", () => {
@@ -379,22 +379,22 @@ describe("computeBlindspots", () => {
         toolName: "read",
         executionFailed: true,
         blindspotCategory: "EISDIR",
-        provider: "anthropic",
-        model: "claude-sonnet-4-5",
+        provider: "provider-a",
+        model: "model-a",
       }),
       makeEvent({
         toolName: "read",
         executionFailed: true,
         blindspotCategory: "EISDIR",
-        provider: "openai",
-        model: "gpt-4o",
+        provider: "provider-b",
+        model: "model-b",
       }),
     ];
 
     const spots = computeBlindspots(events);
     expect(spots.length).toBe(1);
-    expect(spots[0].models).toContain("anthropic/claude-sonnet-4-5");
-    expect(spots[0].models).toContain("openai/gpt-4o");
+    expect(spots[0].models).toContain("provider-a/model-a");
+    expect(spots[0].models).toContain("provider-b/model-b");
   });
 
   it("sorts by count descending", () => {
@@ -478,11 +478,11 @@ describe("formatGlobalStats", () => {
   });
 
   it("includes by-model section", () => {
-    const events = [makeEvent({ provider: "anthropic", model: "claude-sonnet-4-5" })];
+    const events = [makeEvent({ provider: "provider-a", model: "model-a" })];
     const stats = aggregateStats(events);
     const out = formatGlobalStats(stats, 1);
     expect(out).toContain("By Model:");
-    expect(out).toContain("anthropic/claude-sonnet-4-5");
+    expect(out).toContain("provider-a/model-a");
   });
 
   it("includes by-error-type section when errors exist", () => {
@@ -512,7 +512,7 @@ describe("formatBlindspots", () => {
         firstSeen: "2026-05-28T10:00:00Z",
         lastSeen: "2026-05-28T11:00:00Z",
         example: "input keys: [path]",
-        models: ["anthropic/claude-sonnet-4-5"],
+        models: ["provider-a/model-a"],
         suggestion: "Add directory-listing fallback.",
       },
     ];
@@ -522,7 +522,7 @@ describe("formatBlindspots", () => {
     expect(out).toContain("read");
     expect(out).toContain("3x");
     expect(out).toContain("Add directory-listing fallback");
-    expect(out).toContain("anthropic/claude-sonnet-4-5");
+    expect(out).toContain("provider-a/model-a");
   });
 
   it("lists total count at end", () => {
