@@ -784,6 +784,8 @@ This will consume LLM tokens. Continue?`,
 			}
 		},
 	});
+}
+
 // ─── Repair Summary Helper ────────────────────────────────────────────────
 
 function summarizeRepairs(
