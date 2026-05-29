@@ -57,6 +57,8 @@ import {
 	getErrorGuidance,
 } from "./recorder.js";
 import type { RepairEvent } from "./recorder.js";
+import { generateSuggestions, formatSuggestions } from "./suggest-repairs.js";
+import type { LLMConfig } from "./suggest-repairs.js";
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
@@ -633,6 +635,70 @@ pi.on("tool_result", async (event, ctx) => {
 				ctx.ui.notify(`${output}`, "info");
 			} else {
 				console.log(output);
+			}
+		},
+	});
+
+	// ─── Command: suggest new repairs via LLM analysis ───────────────
+	pi.registerCommand("repair-suggest", {
+		description: "Analyze blindspots + event logs and suggest new repairs using LLM",
+		handler: async (_args, ctx) => {
+			const model = ctx.model;
+			if (!model) {
+				const msg = "❌ No active model found. Start a session first.";
+				if (ctx.hasUI) {
+					ctx.ui.notify(msg, "error");
+				} else {
+					console.error(msg);
+				}
+				return;
+			}
+
+			// Confirm token consumption
+			if (ctx.hasUI) {
+				const ok = await ctx.ui.confirm(
+					"Consume tokens?",
+					`This will call ${model.provider}/${model.id} and consume LLM tokens.\nContinue?`,
+				);
+				if (!ok) {
+					ctx.ui.notify("Cancelled.", "info");
+					return;
+				}
+				ctx.ui.setStatus("repair-suggest", `🔍 Analyzing with ${model.id}...`);
+			}
+			console.error("[repair-layer] /repair-suggest: analyzing with", model.id);
+
+			try {
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+				if (!auth.ok) {
+					throw new Error(`API key resolution failed: ${auth.error}`);
+				}
+
+				const llmConfig: LLMConfig = {
+					baseUrl: model.baseUrl,
+					apiKey: auth.apiKey ?? "",
+					modelId: model.id,
+				};
+
+				const result = await generateSuggestions(llmConfig);
+				const output = formatSuggestions(result);
+
+				if (ctx.hasUI) {
+					ctx.ui.notify(output, "info");
+				} else {
+					console.log(output);
+				}
+			} catch (err) {
+				const errMsg = `Analysis failed: ${err}`;
+				if (ctx.hasUI) {
+					ctx.ui.notify(errMsg, "error");
+				} else {
+					console.error("[repair-layer]", errMsg);
+				}
+			} finally {
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("repair-suggest", undefined);
+				}
 			}
 		},
 	});

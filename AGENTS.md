@@ -6,7 +6,7 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 
 | Command | Description |
 |---------|-------------|
-| `npm test` | Run all 181 tests (Vitest) |
+| `npm test` | Run all 204 tests (Vitest) |
 | `npx vitest run` | Run tests once |
 | `npx vitest --watch` | Watch mode |
 
@@ -14,7 +14,7 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `index.ts` | ~680 | Extension entry: 2 handlers + 3 commands + 5 sub-functions |
+| `index.ts` | ~700 | Extension entry: 2 handlers + 4 commands + 5 sub-functions |
 | `repairs.ts` | ~540 | Pure repair functions (field-level arg fixes) |
 | `recorder.ts` | ~545 | JSONL persistence, aggregation, blindspot analysis |
 | `recorder/classifier.ts` | ~115 | Error classification + CLI help text |
@@ -38,7 +38,7 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 ## Naming
 
 - All code, identifiers: **English**
-- Extension commands: `/repair-stats`, `/repair-stats-global`, `/repair-gaps`
+- Extension commands: `/repair-stats`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
 - git branches: standard (main)
 
 ## Tech Stack
