@@ -715,15 +715,26 @@ This will consume LLM tokens. Continue?`,
 				}
 			}
 
-			// ── Phase 1: Analyze ─────────────────────────────────
+				// ── Phase 1: Analyze ─────────────────────────────────
 			console.error("[repair-layer] /repair-suggest: analyzing with", model.id);
 
-			// Show visible progress widget
+			// Show visible progress widget (no phase numbers — they flash by too fast)
 			showProgress(ctx, [
 				"🔧 Repair Suggest - Analyzing",
 				"─────────────────────────",
-				"Phase 1/5: Gathering repair data...",
+				"  📊 Gathering repair data...",
 			]);
+
+			// Animated spinner helpers (declared outside try so finally can clean them up)
+			let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+			let issueSpinnerTimer: ReturnType<typeof setInterval> | null = null;
+
+			function stopSpinner() {
+				if (spinnerTimer) {
+					clearInterval(spinnerTimer);
+					spinnerTimer = null;
+				}
+			}
 
 			try {
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -737,29 +748,45 @@ This will consume LLM tokens. Continue?`,
 					modelId: model.id,
 				};
 
-			// Phase callback for progress feedback — updates both widget and status
-				const onPhase: PhaseCallback = (phase, message) => {
-					// Only update widget for generateSuggestions phases (1-5/5).
-					// composeIssueContent uses its own widget, not the 1-5 progress.
-					const phaseNum = phase === "gathering" ? "1" :
-						phase === "building-prompt" ? "2" :
-						phase === "calling-llm" ? "3" :
-						phase === "parsing" ? "4" :
-						phase === "formatting" ? "5" : undefined;
-					if (phaseNum) {
+				// Animated spinner for long-running phases (LLM calls)
+				const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+				let spinnerIndex = 0;
+
+				function startSpinner(message: string) {
+					stopSpinner();
+					spinnerTimer = setInterval(() => {
+						spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
 						showProgress(ctx, [
 							"🔧 Repair Suggest - Analyzing",
 							"─────────────────────────",
-							`Phase ${phaseNum}/5: ${message}`,
+							` ${spinnerFrames[spinnerIndex]} ${message}`,
 						]);
-					}
+					}, 300);
+				}
+
+			// Phase callback — updates widget + status bar + spinner management
+				const onPhase: PhaseCallback = (phase, message) => {
+					// Always update status bar and widget
 					if (ctx.hasUI) {
 						ctx.ui.setStatus("repair-suggest", message);
 					}
 					console.error(`[repair-layer] /repair-suggest: ${message}`);
+					showProgress(ctx, [
+						"🔧 Repair Suggest - Analyzing",
+						"─────────────────────────",
+						`  ${message}`,
+					]);
+
+					// Start animated spinner during LLM calls, stop for fast phases
+					if (phase === "calling-llm") {
+						startSpinner(message);
+					} else if (phase === "parsing" || phase === "formatting") {
+						stopSpinner();
+					}
 				};
 
 				const result = await generateSuggestions(llmConfig, undefined, undefined, onPhase);
+				stopSpinner();
 				const output = formatSuggestions(result);
 
 				// Show success in widget
@@ -791,16 +818,25 @@ This will consume LLM tokens. Continue?`,
 					);
 
 					if (wantIssue) {
-						// Show progress for issue composition (separate from 1-5 analysis phases)
+						// Show progress for issue composition
 						showProgress(ctx, [
 							"✍️ Repair Suggest — Composing Issue",
 							"─────────────────────────",
-							"Calling LLM to generate issue content...",
+							"  ✍️ Composing GitHub Issue...",
 						]);
 						ctx.ui.setStatus("repair-suggest", "✍️ Composing GitHub Issue...");
 
-						// Pass undefined for onPhase — issue phases are NOT analysis phases;
-						// the widget already shows "Composing Issue" above.
+						// Animated dots spinner during issue composition LLM call
+						issueSpinnerTimer = setInterval(() => {
+							const dots = ["", ".", "..", "..."];
+							const dot = dots[Math.floor(Date.now() / 500) % 4];
+							showProgress(ctx, [
+								"✍️ Repair Suggest — Composing Issue",
+								"─────────────────────────",
+								`  ✍️ Composing GitHub Issue${dot}`,
+							]);
+						}, 150);
+
 						const issue = await composeIssueContent(
 							llmConfig,
 							result.suggestions,
@@ -808,6 +844,9 @@ This will consume LLM tokens. Continue?`,
 							result.analysisSummary,
 							undefined,
 						);
+
+						clearInterval(issueSpinnerTimer!);
+						issueSpinnerTimer = null;
 
 						const owner = "renatocaliari";
 						const repo = "pi-tool-repair-layer";
@@ -848,9 +887,17 @@ This will consume LLM tokens. Continue?`,
 				const errMsg = `Analysis failed: ${err}`;
 				showError(ctx, errMsg);
 			} finally {
-				// Clear the "Analysis Complete" widget.
-				// If the issue-browser path was taken, its exec callback will
-				// re-show a "Complete!" widget — that's intentional and harmless.
+				// Stop any running spinners (may still be ticking after exception)
+				if (spinnerTimer) {
+					clearInterval(spinnerTimer);
+					spinnerTimer = null;
+				}
+				if (issueSpinnerTimer) {
+					clearInterval(issueSpinnerTimer);
+					issueSpinnerTimer = null;
+				}
+				// Clear the widget. If the issue-browser path was taken, its
+				// exec callback will re-show a "Complete!" widget momentarily.
 				clearProgress(ctx);
 				if (ctx.hasUI) {
 					ctx.ui.setStatus("repair-suggest", undefined);

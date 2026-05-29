@@ -409,23 +409,52 @@ export async function callLLM(
 /**
  * Extract JSON from an LLM response that might contain markdown code fences
  * or other surrounding text.
+ *
+ * Uses backtracking with JSON.parse validation to handle nested ```` ``` ````
+ * blocks inside the JSON body (e.g. ```python ... ``` in a GitHub Issue body).
  */
 export function extractJSON(raw: string): string {
-  // Try to find JSON within code fences first
-  const jsonBlockMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-  if (jsonBlockMatch) {
-    return jsonBlockMatch[1].trim();
-  }
-  // Try parsing the whole response as JSON
   const trimmed = raw.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    return trimmed;
+
+  // Step 1: Greedy code fence — from first ``` to LAST ```, handles nested ``` inside JSON body
+  const fenceStart = trimmed.indexOf("```");
+  if (fenceStart !== -1) {
+    const fenceEnd = trimmed.lastIndexOf("```");
+    if (fenceEnd > fenceStart + 3) {
+      let candidate = trimmed
+        .slice(fenceStart + 3, fenceEnd)
+        .replace(/^json\s*\n?/i, "")
+        .trim();
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        // Malformed inside fence — fall through to bracket matching
+      }
+    }
   }
-  // Try to find {...} or [...] in the text
+
+  // Step 2: Try parsing the whole trimmed response as JSON
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      // Truncated or malformed — fall through
+    }
+  }
+
+  // Step 3: Greedy bracket matching — first { to last } (handles truncated responses)
   const objectMatch = trimmed.match(/(\{[\s\S]*\})/);
-  if (objectMatch) return objectMatch[1].trim();
+  if (objectMatch) {
+    const bracketJson = objectMatch[1].trim();
+    // Even if JSON.parse fails here (truncated), return it — caller will handle
+    return bracketJson;
+  }
   const arrayMatch = trimmed.match(/(\[[\s\S]*\])/);
-  if (arrayMatch) return arrayMatch[1].trim();
+  if (arrayMatch) {
+    return arrayMatch[1].trim();
+  }
 
   return trimmed;
 }
@@ -856,11 +885,40 @@ export function parseIssueContent(raw: string): IssueContent {
     };
   } catch (err) {
     console.error("[suggest-repairs] Failed to parse issue content:", err);
+    // Best-effort: extract title via regex from truncated JSON
+    const titleMatch = json.match(/"title"\s*:\s*"([^"]+)"/);
+    const body = tryExtractBody(json);
+    if (titleMatch) {
+      const title = titleMatch[1];
+      if (body) {
+        return { title, body };
+      }
+      return { title, body: "(partial — LLM response was truncated)" };
+    }
     return {
       title: "Repair suggestion (auto-generated)",
       body: `Could not parse LLM response. See console for details.\n\nRaw response:\n\`\`\`\n${raw.slice(0, 2000)}\n\`\`\``,
     };
   }
+}
+
+/**
+ * Best-effort body extraction from truncated JSON.
+ * Takes everything after "body": " until the end of string,
+ * stripping the trailing \"} if present or adding it if missing.
+ */
+function tryExtractBody(json: string): string | null {
+  const bodyMatch = json.match(/"body"\s*:\s*"([\s\S]*)$/);
+  if (!bodyMatch) return null;
+  let content = bodyMatch[1];
+  // Remove trailing "} if the JSON happens to close
+  content = content.replace(/"\s*\}\s*$/, "");
+  // Unescape common sequences
+  content = content.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  if (content.length > 8000) {
+    content = content.slice(0, 8000) + "\n\n*(truncated — LLM response was cut off)*";
+  }
+  return content;
 }
 
 /**

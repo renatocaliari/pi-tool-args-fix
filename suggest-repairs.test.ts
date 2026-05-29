@@ -44,6 +44,24 @@ describe("extractJSON", () => {
   it("should find JSON object in text", () => {
     expect(extractJSON("Here is the result: {\"suggestions\": []}")).toBe('{"suggestions": []}');
   });
+
+  it("should handle nested code fences inside JSON body (greedy bracket matching)", () => {
+    // The body contains ```python ... ``` which would break a lazy regex
+    const input = '{"title":"Fix ENOENT","body":"```python\\nprint(\\"hi\\")\\n```"}';
+    expect(extractJSON(input)).toBe(input);
+  });
+
+  it("should extract from ```json fences with nested ``` inside string values", () => {
+    // LLM wrapped in ```json with a body that contains ``` language blocks
+    const inner = '{"title":"Fix it","body":"```python\\ncode\\n```"}';
+    const input = `\\n\`\`\`json\\n${inner}\\n\`\`\``;
+    expect(extractJSON(input)).toBe(inner);
+  });
+
+  it("should handle truncated JSON gracefully (no parse error)", () => {
+    const input = '{"title":"Fix ENOENT","body":"Partial content';
+    expect(extractJSON(input)).toBe(input);
+  });
 });
 
 describe("parseSuggestions", () => {
