@@ -14,13 +14,17 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `index.ts` | ~640 | Extension entry: 2 event handlers + 3 commands |
-| `repairs.ts` | ~592 | Pure repair functions (field-level arg fixes) |
-| `recorder.ts` | ~720 | JSONL persistence, aggregation, blindspot analysis |
+| `index.ts` | ~680 | Extension entry: 2 handlers + 3 commands + 5 sub-functions |
+| `repairs.ts` | ~540 | Pure repair functions (field-level arg fixes) |
+| `recorder.ts` | ~545 | JSONL persistence, aggregation, blindspot analysis |
+| `recorder/classifier.ts` | ~115 | Error classification + CLI help text |
+| `recorder/tracker.ts` | ~70 | Consecutive failure loop detection |
 | `stats.ts` | ~115 | In-memory session stats |
-| `recorder.test.ts` | 760 | 70 tests for recorder module |
-| `repairs.test.ts` | ~200 | 88 tests for repair functions |
-| `stats.test.ts` | ~60 | 23 tests for stats module |
+| `recorder.test.ts` | ~545 | 41 I/O + analysis + formatting tests |
+| `recorder/classifier.test.ts` | ~140 | 21 classifier/grep/help tests |
+| `recorder/tracker.test.ts` | ~75 | 8 loop detection tests |
+| `repairs.test.ts` | ~640 | 88 tests for repair functions |
+| `stats.test.ts` | ~215 | 23 tests for stats module |
 
 ## Key Concepts
 
