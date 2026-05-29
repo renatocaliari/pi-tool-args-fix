@@ -363,7 +363,7 @@ export default function (pi: ExtensionAPI) {
 //   1. Classify error (pattern matching + CLI filter + safety net)
 //   1.b Track consecutive failures + inject CLI guidance on 2nd+
 //   1.c Detect empty results (analytics only)
-//   2. Handle EISDIR directory fallback (read tool)
+//   2. Handle EISDIR directory fallback (read / read_file)
 //   3. Record event to JSONL
 
 /** Phase 1: Classify tool result error into canonical type. */
@@ -487,7 +487,7 @@ function trackAndInterceptFailures(
 }
 
 /**
- * Phase 2: Handle EISDIR directory fallback (read tool on a directory).
+ * Phase 2: Handle EISDIR directory fallback (read / read_file on a directory).
  * Returns a patched result with directory listing when applicable.
  */
 async function handleEisdirFallback(
@@ -496,7 +496,8 @@ async function handleEisdirFallback(
 	err: { hasError: boolean; executionErrorType: string | null },
 	stats: any,
 ): Promise<{ result?: { content: any; isError: boolean }; wasHandled: boolean; handleType: string | null }> {
-	if (event.toolName !== "read" || !err.hasError || err.executionErrorType !== "EISDIR") {
+	const TOOLS_WITH_DIR_FALLBACK = new Set(["read", "read_file"]);
+	if (!TOOLS_WITH_DIR_FALLBACK.has(event.toolName) || !err.hasError || err.executionErrorType !== "EISDIR") {
 		return { wasHandled: false, handleType: null };
 	}
 
@@ -516,21 +517,7 @@ async function handleEisdirFallback(
 		if (!stat.isDirectory()) return { wasHandled: false, handleType: null };
 
 		const entries = await fs.readdir(resolvedPath);
-		const listing = entries.map((e) => `  ${e}`).join("\n");
-		const dirName = path.basename(resolvedPath);
-
-		const listingContent = [
-			`📁 Directory: ${resolvedPath}`,
-			"",
-			"Contents:",
-			listing,
-			"",
-			`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
-			"",
-			"ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.",
-		].join("\n");
-
-		const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
+		const { listingContent, detail, dirName } = formatDirectoryListing(resolvedPath, entries, event.toolName);
 		console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
 		recordRepairs(stats, [detail]);
 

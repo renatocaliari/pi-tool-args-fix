@@ -30,6 +30,7 @@ import {
   isNumberField,
   isEisdirError,
   extractTextContent,
+  formatDirectoryListing,
   stripExtraPropertiesFromItems,
   ARRAY_ITEM_SCHEMAS,
 } from "./repairs.js";
@@ -523,7 +524,60 @@ describe("extractTextContent", () => {
   });
 });
 
-// ─── Strip Extra Properties Tests ──────────────────────────────────────
+// ─── Directory Listing Format Tests ────────────────────────────────────
+
+describe("formatDirectoryListing", () => {
+  it("formats listing for read tool with multiple entries", () => {
+    const result = formatDirectoryListing(
+      "/home/user/project/src",
+      ["main.ts", "utils.ts", "components"],
+      "read",
+    );
+    expect(result.listingContent).toContain("Directory: /home/user/project/src");
+    expect(result.listingContent).toContain("Contents:");
+    expect(result.listingContent).toContain("  main.ts");
+    expect(result.listingContent).toContain("  utils.ts");
+    expect(result.listingContent).toContain("  components");
+    expect(result.listingContent).toContain("3 entries total.");
+    expect(result.listingContent).toContain("The model called read on a directory.");
+    expect(result.detail).toBe("src: directory fallback (3 entries listed)");
+    expect(result.dirName).toBe("src");
+  });
+
+  it("formats listing for read_file tool with single entry", () => {
+    const result = formatDirectoryListing(
+      "/home/user/project",
+      ["main.ts"],
+      "read_file",
+    );
+    expect(result.listingContent).toContain("Directory: /home/user/project");
+    expect(result.listingContent).toContain("1 entry total.");
+    expect(result.listingContent).toContain("The model called read_file on a directory.");
+    expect(result.detail).toBe("project: directory fallback (1 entry listed)");
+    expect(result.dirName).toBe("project");
+  });
+
+  it("handles empty directory", () => {
+    const result = formatDirectoryListing("/empty/dir", [], "read");
+    expect(result.listingContent).toContain("0 entries total.");
+    expect(result.detail).toBe("dir: directory fallback (0 entries listed)");
+  });
+
+  it("uses singular 'entry' for count of 1", () => {
+    const result = formatDirectoryListing("/x", ["a"], "read");
+    expect(result.listingContent).toContain("1 entry total.");
+  });
+
+  it("uses plural 'entries' for non-1 count", () => {
+    const result1 = formatDirectoryListing("/x", ["a", "b"], "read");
+    expect(result1.listingContent).toContain("2 entries total.");
+
+    const result0 = formatDirectoryListing("/x", [], "read");
+    expect(result0.listingContent).toContain("0 entries total.");
+  });
+});
+
+// ─── Strip Extra Properties Tests
 
 describe("stripExtraPropertiesFromItems", () => {
   it("strips path from edits[] items (real-world failure)", () => {

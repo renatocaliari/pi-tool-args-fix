@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-187_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-192_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
 
@@ -24,13 +24,13 @@
 > *"The core insight: 'open model bad at tool calling' is almost always a harness problem. A finite set of compositional failures repeats across models."*  
 > — [Ahmad Awais](https://x.com/mrahmadawais/status/2050956678502420612)
 
-This extension is the harness fix. ~90% of tool-calling failures are the same reusable patterns — fix them once at the tool boundary and every model benefits. These exact patterns were observed and fixed from production [DeepSeek V4 and Mimo 2.5](https://x.com/mrahmadawais/status/2050956678502420612) agent logs, but the repairs are field-name based — any model that emits the same structural mistakes gets the same transparent fix.
+This extension is the harness fix. The patterns were observed and fixed from production [DeepSeek V4 and Mimo 2.5](https://x.com/mrahmadawais/status/2050956678502420612) agent logs, but the repairs are field-name based — any model that emits the same structural mistakes gets the same transparent fix.
 
 ---
 
 ## 💡 Concept
 
-Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for broken tool calls. But the failures aren't random — they're **12 finite, compositional bugs** that repeat across every model:
+Production LLMs (DeepSeek V4, Mimo 2.5, and others) share a surprising pattern: most of their tool-calling failures come from a small, recurring set of structural mistakes — around a dozen patterns we've observed and fixed.
 
 | # | What the model emits | What the tool needs | Repair |
 |---|---------------------|---------------------|--------|
@@ -39,18 +39,18 @@ Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for brok
 | 3 | `edits: {oldText, newText}` | `edits: [{oldText, newText}]` | Wrap bare object → single-element array |
 | 4 | `function_names: "main"` | `function_names: ["main"]` | Wrap bare string/number → array |
 | 5 | `path: "[notes.md](http://notes.md)"` | `path: "notes.md"` | Unwrap markdown links from paths |
-| 6 | `{limit: 30}` | `{offset: 1, limit: 30}` | Relational defaults (read/read_file) |
+| 6 | `{limit: 30}` | `{offset: 1, limit: 30}` | Relational defaults for tools with `limit`/`offset` (e.g. `read`, `read_file`) |
 | 7 | `tags: "admin, user"` | `tags: ["admin", "user"]` | Split delimited strings → array |
 | 8 | `name: "null"` | omit the field entirely | Strip null-like strings |
 | 9 | `strict: "true"` | `strict: true` | Coerce boolean strings |
 | 10 | `limit: "42"` | `limit: 42` | Coerce number strings |
-| 11 | `read ~/dir/` → EISDIR | `📁 Directory listing` | Directory fallback via `fs.readdir()` |
+| 11 | `read ~/dir/` → EISDIR | `📁 Directory listing` | Directory fallback for `read` tool (also applicable to `read_file`) |
 | 12 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items |
 
 ### Why not just use better models?
 
-Because this is a **harness problem**, not a model problem. Every model makes these mistakes — including frontier models. Fixing it at the harness level means:
-- ✅ **Any model that makes these mistakes benefits** — from Llama to Claude
+Because this is a **harness problem**, not a model problem. Even frontier models make these mistakes. Fixing it at the harness level means:
+- ✅ **Any model that makes the same mistakes benefits**
 - ✅ **Zero changes to model weights** or training pipelines
 - ✅ **Works offline**, no cloud dependency
 - ✅ **Transparent** — model doesn't know it was helped
@@ -97,7 +97,7 @@ Because this is a **harness problem**, not a model problem. Every model makes th
 
 | Mechanism | Trigger | Effect |
 |-----------|---------|--------|
-| **Directory fallback** | `read` on a directory → EISDIR | Returns `📁 Directory: listing` with contents |
+| **Directory fallback** | `read` / `read_file` on a directory → EISDIR | Returns `📁 Directory: listing` with contents |
 | **CLI guidance** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Appends `── Tool guidance ──` with exit code semantics |
 | **Edit guidance** | 2nd+ consecutive `edit` failure | Tells model to re-read the file before trying again |
 | **Schema guidance** | First `SCHEMA_VALIDATION` error per tool | Explains validation rules (types, enums, maxLength) |
@@ -351,7 +351,7 @@ pi-tool-repair-layer/
 │   ├── classifier.ts         # Error classification + help text (~110 lines)
 │   └── tracker.ts            # Consecutive failure tracker (~70 lines)
 ├── stats.ts                  # In-memory session stats (~115 lines)
-├── *.test.ts                 # 187 tests across 5 files
+├── *.test.ts                 # 192 tests across 5 files
 └── README.md                 # You are here
 ```
 
@@ -369,7 +369,7 @@ pi-tool-repair-layer/
 git clone https://github.com/renatocaliari/pi-tool-repair-layer
 cd pi-tool-repair-layer
 npm install
-npx vitest run   # 187 tests
+npx vitest run   # 192 tests
 ```
 
 ---

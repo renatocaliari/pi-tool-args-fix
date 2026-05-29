@@ -573,3 +573,36 @@ export function extractTextContent(content: unknown): string | null {
   }
   return null;
 }
+
+/**
+ * Format a directory listing result for the EISDIR fallback.
+ * Pure function — no I/O, no ExtensionAPI dependency.
+ *
+ * @param resolvedPath - Absolute path to the directory
+ * @param entries - Directory entry names
+ * @param toolName - Tool name ("read" or "read_file") for contextual message
+ * @returns Formatted listing content, detail string for logs, and directory name
+ */
+export function formatDirectoryListing(
+  resolvedPath: string,
+  entries: string[],
+  toolName: string,
+): { listingContent: string; detail: string; dirName: string } {
+  const listing = entries.map((e) => `  ${e}`).join("\n");
+  const dirName = path.basename(resolvedPath);
+
+  const listingContent = [
+    `📁 Directory: ${resolvedPath}`,
+    "",
+    "Contents:",
+    listing,
+    "",
+    `${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
+    "",
+    `ℹ️ The model called ${toolName} on a directory. Use bash ls or ${toolName} with a specific file path inside this directory.`,
+  ].join("\n");
+
+  const detail = `${dirName}: directory fallback (${entries.length} entr${entries.length === 1 ? "y" : "ies"} listed)`;
+
+  return { listingContent, detail, dirName };
+}
