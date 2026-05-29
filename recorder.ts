@@ -312,6 +312,8 @@ const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
   timeout: "Add auto-timeout extension for known long-running tools (build, test, lint).",
   "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
   SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
+  CONSECUTIVE_LOOP: "The model is calling the same tool repeatedly with identical arguments and every call fails. The failure tracker can inject guidance or circuit-break after N attempts.",
+  EMPTY_RESULT: "The tool returned successfully but with empty output — this can trigger silent loops where the model varies parameters endlessly looking for results.",
   model_null_field: "Add null-stripping in tool_call handler (already done for some fields — expand coverage to all optional fields).",
   model_domain_list: "Add comma/space-split to array repair (already done for some fields — verify field name coverage).",
   model_bare_array: "Add bare-string → array wrapping for this field (check ARRAY_FIELD_NAMES coverage).",
@@ -595,13 +597,6 @@ export function formatBlindspots(spots: Blindspot[]): string {
  * marked as `CONSECUTIVE_LOOP` and further guidance can be injected.
  */
 const CONSECUTIVE_LIMIT = 3;
-
-/** Fingerprint for one tool call attempt. */
-export interface ToolCallFingerprint {
-  toolName: string;
-  /** Canonical arg keys sorted — e.g. ["path"] vs ["content", "edits", "path"] */
-  argKeys: string[];
-}
 
 /** Track consecutive failures per tool. Thread-safe (single-threaded Node). */
 export class ConsecutiveFailureTracker {

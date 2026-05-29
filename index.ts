@@ -28,16 +28,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-	PATH_FIELD_NAMES,
-	ARRAY_FIELD_NAMES,
-	BOOLEAN_FIELD_NAMES,
-	CONTENT_FIELD_NAMES,
-	NUMBER_FIELD_NAMES,
-	unwrapMarkdownLink,
 	cleanPathValue,
 	tryParseJsonString,
 	wrapAsArrayIfNeeded,
-	wrapObjectAsArrayIfNeeded,
 	applyRelationalDefaults,
 	classifyField,
 	isNullLikeString,
@@ -57,7 +50,6 @@ import {
 	computeBlindspots,
 	pruneOldSessions,
 	classifyErrorType,
-	formatSessionStats,
 	formatGlobalStats,
 	formatBlindspots,
 	ConsecutiveFailureTracker,

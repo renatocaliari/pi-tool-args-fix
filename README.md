@@ -46,7 +46,51 @@ This catches the common pattern where the model duplicates a parent-level parame
 
 When the model calls `read` on a directory path instead of a file, the native tool returns an EISDIR error. The extension intercepts this via the `tool_result` hook, detects the EISDIR error, lists the directory contents via `fs.readdir()`, and returns a clean listing with a hint for the model — all in the same tool result. No second tool call needed.
 
-Repair order matters:
+### CLI Guidance (Consecutive Failure)
+
+When a native CLI tool (`bash`, `grep`, `find`, `ls`) fails 2+ times consecutively with the same argument pattern, the extension intercepts the `tool_result` and appends contextual documentation explaining the tool's exit code semantics and common causes.
+
+Example: on the 2nd consecutive `grep` failure, the model sees:
+```
+(no output) — exited with code 1
+
+── Tool guidance ──
+The grep tool searches for patterns in files.
+  - Exit code 0: match(es) found
+  - Exit code 1: no matches found (this is NORMAL, not an error)
+  - Exit code 2: error (e.g. file not found, invalid pattern)
+Tip: Try a broader pattern, check the file path, or use grep -i
+```
+
+This works for any native CLI tool. Extension tools (`agent_browser`, `ctx_search`, etc.) are excluded — their error semantics differ per extension.
+
+### Consecutive Loop Detection
+
+The extension tracks consecutive failures per tool via `ConsecutiveFailureTracker`. When the same tool fails 3+ times with the same argument pattern, the event is marked as `CONSECUTIVE_LOOP` in the blindspot log. This catches the common pattern where the model enters an unproductive retry loop (e.g. 15+ retries of `edit` on the same file).
+
+### Error Classification (Blindspot Detection)
+
+All `tool_result` errors are classified by `classifyErrorType()`, a pure pattern-matching function that works on error text alone (no tool name dependency):
+
+| Pattern | Classification |
+|---------|---------------|
+| `EISDIR` | `EISDIR` |
+| `no such file` / `ENOENT` | `ENOENT` |
+| `permission denied` / `EACCES`/`EPERM` | `EACCES` |
+| `timeout` / `timed out` | `timeout` |
+| `rate limit` / `429` | `rate_limit` |
+| `bad request` / `400` | `bad_request` |
+| `could not find the exact text` / `oldText does not match` | `EDIT_MISMATCH` |
+| `Validation failed` / `must not have more than` / `must be one of` | `SCHEMA_VALIDATION` |
+| `4xx` / `5xx` HTTP codes | `HTTP_<code>` |
+
+Unclassifiable errors are filtered:
+- **Native CLI false positives**: `bash|grep|find|ls` with empty error text → not flagged
+- **Generic safety net**: any tool with empty error text → not flagged
+- **Empty results**: successful tool calls with no output logged as `EMPTY_RESULT` (analytics only)
+
+### Tool Call Repair Order
+
 1. `clean-path` — unwrap markdown links, normalize `~/` paths
 2. `parse-json` — string → object/array
 3. `wrap-object-as-array` — `{...}` → `[{...}]`
@@ -140,16 +184,16 @@ post-session analysis.
 | `eventType` | `"tool_call"` / `"tool_result"` | Phase of the event |
 | `sessionId` | string | pi session identifier |
 | `turnIndex` | number | Sequential event counter |
-| `toolName` | string | Tool that was called (e.g. `read`, `edit`) |
-| `provider` | string | Model provider (e.g. `anthropic`) |
-| `model` | string | Model id (e.g. `claude-sonnet-4-5`) |
+| `toolName` | string | Tool that was called (e.g. `read`, `edit`, `bash`) |
+| `provider` | string | Model provider (e.g. `test-provider`) |
+| `model` | string | Model id (e.g. `test-model`) |
 | `repairs` | string[] | What repairs were applied |
 | `wasRepaired` | boolean | Whether any repair was applied |
 | `executionFailed` | boolean | Whether the tool execution failed |
-| `executionErrorType` | string | Error category (`ENOENT`, `EACCES`, `timeout`, …) |
-| `wasHandled` | boolean | Whether the extension handled the error (e.g. directory fallback) |
-| `handleType` | string | Handler name (`directory_fallback`, …) |
-| `blindspotCategory` | string | Non-null when this error could benefit from a new repair |
+| `executionErrorType` | string | Error category (`ENOENT`, `EACCES`, `timeout`, `EDIT_MISMATCH`, `SCHEMA_VALIDATION`, …) |
+| `wasHandled` | boolean | Whether the extension handled the error (e.g. directory fallback, CLI guidance) |
+| `handleType` | string | Handler name (`directory_fallback`, `cli_guidance`, …) |
+| `blindspotCategory` | string | Non-null when this error could benefit from a new repair (`CONSECUTIVE_LOOP`, `EMPTY_RESULT`, …) |
 | `inputKeys` | string[] | Structural fingerprint: input field names |
 | `inputNullKeys` | string[] | Fields that were sent as `null` |
 | `inputExtraProps` | string[] | Extra properties stripped from array items |

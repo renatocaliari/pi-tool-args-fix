@@ -25,7 +25,7 @@ generated_at: 2026-05-27
 | repair-functions | test-unit | 70% |
 | extension-integration | test-integration | 50% |
 
-## Coverage Results (2026-05-27)
+## Coverage Results
 | Metric | Score | Threshold | Status |
 |--------|-------|-----------|--------|
 | Statements | 98.38% | 70% | ✅ PASS |
@@ -33,64 +33,34 @@ generated_at: 2026-05-27
 | Functions | 100% | 70% | ✅ PASS |
 | Lines | 98.38% | 70% | ✅ PASS |
 
+## Test Count (current)
+| Test File | Tests | Mutations Target |
+|-----------|-------|------------------|
+| `repairs.test.ts` | 88 | 70% |
+| `recorder.test.ts` | 70 | 70% |
+| `stats.test.ts` | 23 | 50% |
+| **Total** | **181** | — |
+
 ## Test Structure
 
-### Unit Tests (repairs.test.ts)
-- **64 test cases** covering all repair functions
+### Unit Tests: repairs.test.ts (88 tests)
+- **All repair functions** covered
 - **TDD approach**: Tests written for critical business logic
 - **No mocks**: Pure functions, no dependencies to mock
 - **Edge cases**: Comprehensive boundary condition testing
 
-### Test Categories
-1. **Path Repair Tests** (9 tests)
-   - Markdown link unwrapping
-   - Path normalization
-   - ~/ path resolution
+### Unit Tests: recorder.test.ts (70 tests)
+- **I/O**: ensureDir, recordEvent, readSessionEvents, readAllEvents, pruneOldSessions, malformed JSON, fallback session ID
+- **aggregateStats**: counts, byTool, byModel, byRepairType, byErrorType, empty input
+- **extractRepairTypes**: known patterns, empty input, unrecognized patterns
+- **computeBlindspots**: grouping, filtering, model tracking, sorting
+- **formatSessionStats / formatGlobalStats / formatBlindspots**: empty states, completeness, percentages
+- **classifyErrorType**: all 9 error categories plus edge cases (EISDIR, ENOENT, EACCES, timeout, rate_limit, bad_request, HTTP, EDIT_MISMATCH, SCHEMA_VALIDATION)
+- **ConsecutiveFailureTracker** (7 tests): counting, arg-pattern reset, recordSuccess, per-tool isolation, threshold, reset
+- **getToolHelp** (5 tests): bash/grep/find/ls/unknown
 
-2. **JSON Parse Tests** (5 tests)
-   - Array/object string parsing
-   - Invalid JSON handling
-   - Primitive rejection
-
-3. **Array Wrap Tests** (8 tests)
-   - Bare value wrapping
-   - Object wrapping
-   - Null/undefined handling
-
-4. **Relational Defaults Tests** (4 tests)
-   - read_file offset/limit defaults
-   - No-op when both present
-
-5. **Field Classification Tests** (10 tests)
-   - Path field detection
-   - Content field exclusion
-   - Boolean/number field detection
-
-6. **Null-Like String Tests** (3 tests)
-   - Null/none/n/a detection
-   - False positive prevention
-
-7. **String Split Tests** (9 tests)
-   - Comma/space splitting
-   - JSON/path/URL exclusion
-
-8. **Boolean Coercion Tests** (6 tests)
-   - Truthy/falsy string coercion
-   - Case insensitivity
-   - Unknown string handling
-
-9. **Number Coercion Tests** (6 tests)
-   - Integer/decimal coercion
-   - Ambiguous string rejection
-   - Edge case handling
-
-10. **Content Field Detection Tests** (2 tests)
-    - Content field identification
-    - Non-content field exclusion
-
-11. **Number Field Detection Tests** (2 tests)
-    - Number field identification
-    - Non-number field exclusion
+### Unit Tests: stats.test.ts (23 tests)
+- createStats, recordRepairs, formatStats, repair history
 
 ## Anti-Patterns Avoided
 - ❌ No mocks for simple functions (pure functions)
