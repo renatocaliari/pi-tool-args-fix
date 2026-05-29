@@ -6,7 +6,7 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 
 | Command | Description |
 |---------|-------------|
-| `npm test` | Run all 204 tests (Vitest) |
+| `npm test` | Run all 209 tests (Vitest) |
 | `npx vitest run` | Run tests once |
 | `npx vitest --watch` | Watch mode |
 
@@ -20,20 +20,21 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 | `recorder/classifier.ts` | ~115 | Error classification + CLI help text |
 | `recorder/tracker.ts` | ~70 | Consecutive failure loop detection |
 | `stats.ts` | ~115 | In-memory session stats |
-| `suggest-repairs.ts` | ~742 | LLM repair suggestion engine (blindspot analysis, critical recommendation, code patch generation) |
+| `suggest-repairs.ts` | ~742 | LLM repair suggestion engine (blindspot analysis, critical recommendation, GitHub Issue composition) |
 | `recorder.test.ts` | ~545 | 41 I/O + analysis + formatting tests |
 | `recorder/classifier.test.ts` | ~140 | 21 classifier/grep/help tests |
 | `recorder/tracker.test.ts` | ~75 | 8 loop detection tests |
 | `repairs.test.ts` | ~640 | 88 tests for repair functions |
 | `stats.test.ts` | ~215 | 23 tests for stats module |
-| `suggest-repairs.test.ts` | ~175 | 12 tests for suggestion engine (unit + formatting + recommendation) |
+| `suggest-repairs.test.ts` | ~175 | 17 tests for suggestion engine (unit + formatting + recommendation + issue) |
 
 ## Key Concepts
 
 - **Repairs**: field-level fixes (validate-then-repair, content fields NEVER touched)
-- **/repair-suggest workflow**: gather data → confirm with event/blindspot counts → generate suggestions → phase-based progress via setStatus → save report + patches to `~/.pi/repair-suggestions/` → optional code patch generation
-- **Critical recommendation**: LLM double-checks its own suggestions, outputs per-suggestion actions (implement/defer/reject) with reasoning
-- **Code patches**: saved to `~/.pi/repair-suggestions/patches/` for manual review and integration into the project repo
+- **/repair-suggest workflow**: gather data → confirm → generate suggestions → LLM composes GitHub Issue (title + body with code hints) → opens pre-filled New Issue page in browser → user reviews and submits
+- **auto-evolution**: every user who submits an Issue contributes patterns/corrections back to the repo — no API token, no GitHub integration
+- **Zero-token GitHub flow**: uses `github.com/owner/repo/issues/new?title=...&body=...&labels=suggestion` query params — no API key needed
+- **Issue template**: composed by user's own LLM with context (error patterns, frequency, correction code) but no sensitive session data
 - **Recorder**: JSONL event logging per session at `.pi/repair-log/`, retention 50 sessions
 - **Blindspots**: error patterns without repair coverage (via `computeBlindspots`)
 - **Loop detection**: `ConsecutiveFailureTracker` marks 3+ consecutive failures as `CONSECUTIVE_LOOP`

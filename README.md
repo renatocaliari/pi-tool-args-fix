@@ -259,7 +259,7 @@ Total                    31
 
 ✓ (confirm)
 
-Gathering event data → Building prompt → Analyzing with LLM...
+📊 Gathering repair data... → 📝 Building analysis prompt... → 🤖 Analyzing with LLM...
 (progress feedback via setStatus at each phase)
 
 💡 Repair Suggestions (LLM-generated)
@@ -269,19 +269,27 @@ Gathering event data → Building prompt → Analyzing with LLM...
 ...
 ✅ Recommendation: implement #1, #2 | defer #3
 
-✓ Save report to ~/.pi/repair-suggestions/suggest-2026-05-29.md
+⚡ Confirm: Open GitHub Issue?
+   You just helped the repair-layer evolve automatically.
+   Every issue like this makes the extension smarter for everyone.
 
-⚡ Confirm: Generate code patches?
-   Recommended to implement 2 suggestion(s) now.
-   Patches saved to ~/.pi/repair-suggestions/patches/ for review.
+   Recommended to implement 2 suggestion(s).
+   The LLM will compose a title + body with code hints —
+   you review and submit.
+
    Proceed?
 
 ✓ (confirm)
 
-Reading codebase → generating code → patches saved.
+✍️ Composing GitHub Issue... → ✅ Opening browser...
+
+✅ Issue pre-filled in your browser.
+   Review and click "Submit new issue".
+   You just helped the repair-layer evolve.
+   Every issue makes it smarter for everyone.
 ```
 
-Patches are saved to `~/.pi/repair-suggestions/patches/` for manual review — never auto-applied.
+**How it works:** The LLM composes a GitHub Issue (title + body with error patterns and code hints) and opens a pre-filled `New Issue` page via GitHub's URL query parameters — no API token, no setup. User reviews and clicks Submit.
 
 ### Example: Blindspot Report
 
@@ -392,8 +400,8 @@ pi-tool-repair-layer/
 │   └── tracker.ts            # Consecutive failure tracker (~70 lines)
 ├── stats.ts                  # In-memory session stats (~115 lines)
 ├── suggest-repairs.ts         # LLM repair suggestion engine (~742 lines)
-├── suggest-repairs.test.ts   # 12 tests for suggestion engine
-├── *.test.ts                 # 204 tests across 6 files
+├── suggest-repairs.test.ts   # 17 tests for suggestion engine
+├── *.test.ts                 # 209 tests across 6 files
 └── README.md                 # You are here
 ```
 
@@ -411,7 +419,7 @@ pi-tool-repair-layer/
 git clone https://github.com/renatocaliari/pi-tool-repair-layer
 cd pi-tool-repair-layer
 npm install
-npx vitest run   # 204 tests across 6 files
+npx vitest run   # 209 tests across 6 files
 ```
 
 ---

@@ -4,6 +4,8 @@ import {
   extractJSON,
   parseSuggestions,
   formatSuggestions,
+  parseIssueContent,
+  buildIssueUrl,
   type RepairSuggestion,
   type SuggestResult,
   type LLMConfig,
@@ -171,5 +173,49 @@ describe("LLMConfig type", () => {
     expect(config.apiKey).toBe("sk-test");
     expect(config.modelId).toBe("test-model");
   });
+});
 
+describe("parseIssueContent", () => {
+  it("should parse valid issue content", () => {
+    const raw = JSON.stringify({
+      title: "Add fuzzy path matching for ENOENT errors",
+      body: "## Description\nENOENT errors are common.\n\n## Proposed fix\nImplement fuzzy matching.",
+    });
+    const result = parseIssueContent(raw);
+    expect(result.title).toBe("Add fuzzy path matching for ENOENT errors");
+    expect(result.body).toContain("ENOENT errors");
+    expect(result.body).toContain("fuzzy matching");
+  });
+
+  it("should handle malformed response gracefully", () => {
+    const result = parseIssueContent("not valid json");
+    expect(result.title).toContain("suggestion");
+    expect(result.body).toContain("Could not parse");
+  });
+
+  it("should fall back to defaults for missing fields", () => {
+    const result = parseIssueContent(JSON.stringify({}));
+    expect(result.title).toBe("Repair suggestion");
+  });
+});
+
+describe("buildIssueUrl", () => {
+  it("should generate a valid GitHub issue URL", () => {
+    const url = buildIssueUrl("renatocaliari", "pi-tool-repair-layer", {
+      title: "Fix ENOENT errors",
+      body: "Description here",
+    });
+    expect(url).toContain("github.com/renatocaliari/pi-tool-repair-layer/issues/new");
+    expect(url).toContain("title=Fix+ENOENT+errors");
+    expect(url).toContain("body=Description+here");
+    expect(url).toContain("labels=suggestion");
+  });
+
+  it("should URL-encode special characters in title and body", () => {
+    const url = buildIssueUrl("owner", "repo", {
+      title: "Bug: fix & improve",
+      body: "Check `code` here",
+    });
+    expect(url).toContain("%26"); // & encoded
+  });
 });

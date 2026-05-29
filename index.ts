@@ -57,8 +57,8 @@ import {
 	getErrorGuidance,
 } from "./recorder.js";
 import type { RepairEvent } from "./recorder.js";
-import { generateSuggestions, formatSuggestions, generateCodeChanges } from "./suggest-repairs.js";
-import type { LLMConfig, PhaseCallback, CodeChange } from "./suggest-repairs.js";
+import { generateSuggestions, formatSuggestions, composeIssueContent, buildIssueUrl } from "./suggest-repairs.js";
+import type { LLMConfig, PhaseCallback, IssueContent } from "./suggest-repairs.js";
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
@@ -653,31 +653,6 @@ pi.on("tool_result", async (event, ctx) => {
 	}
 
 	// ─── Helper: read codebase files for implementation ────────
-	async function readCodebaseFiles(): Promise<{ path: string; content: string }[]> {
-		// Try cwd (dev) and extension install dir
-		let baseDir = ".";
-		try {
-			const installDir = new URL('.', import.meta.url).pathname;
-			const cwdCandidate = path.resolve("repairs.ts");
-			const installCandidate = path.join(installDir, "repairs.ts");
-			for (const c of [cwdCandidate, installCandidate]) {
-				await fs.access(c);
-				baseDir = path.dirname(c);
-				break;
-			}
-		} catch {}
-		const files = ["repairs.ts", "repairs.test.ts", "index.ts"];
-		const results: { path: string; content: string }[] = [];
-		for (const file of files) {
-			const full = path.join(baseDir, file);
-			try {
-				const c = await fs.readFile(full, "utf8");
-				results.push({ path: file, content: c });
-			} catch {}
-		}
-		return results;
-	}
-
 	// ─── Command: suggest new repairs via LLM analysis ────────
 	pi.registerCommand("repair-suggest", {
 		description: "Analyze blindspots + event logs, suggest new repairs, and optionally generate implementation",
@@ -745,104 +720,54 @@ This will consume LLM tokens. Continue?`,
 					console.log(output);
 				}
 
-				// ── Phase 2: Save report + ask about code generation ──
-				// Save report to .pi/repair-suggestions/
-				const reportDir = path.join(process.env.HOME || process.env.USERPROFILE || "/tmp", ".pi", "repair-suggestions");
-				await fs.mkdir(reportDir, { recursive: true }).catch(() => {});
-				const ts = new Date().toISOString().replace(/[:.]/g, "-");
-				const reportPath = path.join(reportDir, `suggest-${ts}.md`);
-				const reportContent = `# Repair Suggestions Report
-Generated: ${new Date().toISOString()}
-Model: ${model.provider}/${model.id}
-
-## Suggestions
-${result.suggestions.map((s, i) => `### ${i+1}. ${s.title}
-**Effort:** ${s.effort}
-**Rationale:** ${s.rationale}
-**Addresses:** ${s.addressesCategory || "general"}
-**Tools:** ${s.affectedTools.join(", ")}
-**Plan:** ${s.implementationPlan.join(", ")}
-**Risks:** ${s.risks}
-`).join("
-")}
-
-## Recommendation
-${result.recommendation.assessment || "No assessment provided."}
-
-${result.recommendation.recommendedActions.map(a => {
-  const sug = result.suggestions[a.suggestionIndex - 1];
-  return `- **#${a.suggestionIndex}** ${sug?.title}: ${a.action} - ${a.reason}`;
-}).join("
-")}
-
-## Getting Started
-Run \`/repair-suggest\` again to generate implementation patches.`;
-				await fs.writeFile(reportPath, reportContent, "utf8").catch(() => {});
-				console.error(`[repair-layer] Report saved to ${reportPath}`);
-
-				// ── Phase 3: Ask if user wants code patches ────────
+				// ── Phase 2: Open GitHub Issue with suggestion ──────
 				const implementNow = result.recommendation.recommendedActions.filter(a => a.action === "implement");
 				if (implementNow.length > 0 && ctx.hasUI) {
-					const wantPatches = await ctx.ui.confirm(
-						"Generate code patches?",
-						`Recommended to implement ${implementNow.length} suggestion(s) now.
-
-Patches will be saved to .pi/repair-suggestions/patches/ for you to review and integrate manually.
-
-Proceed?`,
+					const wantIssue = await ctx.ui.confirm(
+						"Open GitHub Issue?",
+						`Would you like to open a pre-filled GitHub Issue with the repair suggestion?\n` +
+						`You just helped the repair-layer evolve automatically. Every issue like this` +
+						` makes the extension smarter for everyone.\n\n` +
+						`Recommended to implement ${implementNow.length} suggestion(s).\n` +
+						`The LLM will compose a title + body with code hints — you review and submit.\n\n` +
+						`Proceed?`,
 					);
 
-					if (wantPatches) {
-						ctx.ui.setStatus("repair-suggest", "📖 Reading codebase...");
+					if (wantIssue) {
+						ctx.ui.setStatus("repair-suggest", "✍️ Composing GitHub Issue...");
 
-						const toImplement = implementNow.map(a => result.suggestions[a.suggestionIndex - 1]).filter(Boolean);
-						const codeFiles = await readCodebaseFiles();
-
-						const codeResult = await generateCodeChanges(
+						const issue = await composeIssueContent(
 							llmConfig,
-							toImplement,
-							codeFiles,
+							result.suggestions,
+							result.recommendation,
+							result.analysisSummary,
 							onPhase,
 						);
 
-						if (codeResult.changes.length > 0) {
-							// Save patches
-							const patchesDir = path.join(reportDir, "patches");
-							await fs.mkdir(patchesDir, { recursive: true }).catch(() => {});
-							const patchContent = codeResult.changes.map(c =>
-								`## File: ${c.file}
-## Description: ${c.description}
-## Patch:
-\`\`\`diff
---- a/${c.file}
-+++ b/${c.file}
-@@ ... @@
-${c.newText.split("\n").map(l => "+" + l).join("\n")}
-\`\`\`
-`
-							).join("
----
-");
-							const patchPath = path.join(patchesDir, `patches-${ts}.md`);
-							await fs.writeFile(patchPath, patchContent, "utf8");
-							ctx.ui.notify(
-								`✅ ${codeResult.changes.length} patch(es) saved.
-Review and apply: ${patchPath}
+						const owner = "renatocaliari";
+						const repo = "pi-tool-repair-layer";
+						const issueUrl = buildIssueUrl(owner, repo, issue);
 
-${codeResult.testInstructions ? "\nTests needed:\n" + codeResult.testInstructions : ""}
-
-${codeResult.notes ? "\nNotes:\n" + codeResult.notes : ""}`,
-								"info",
-							);
-						} else {
-							ctx.ui.notify(`⚠️ Could not generate code patches. ${codeResult.notes}`, "error");
+						// Open browser via macOS open command
+						const { execSync } = await import("node:child_process");
+						try {
+							execSync(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 });
+						} catch {
+							// fallback: just show the URL
+							ctx.ui.notify(`Open this link:\n${issueUrl}`, "info");
 						}
+
+						ctx.ui.notify(
+							"✅ Issue pre-filled in your browser. Review and click 'Submit new issue'.\n\n" +
+							"You just helped the repair-layer evolve. Every issue makes it smarter for everyone.",
+							"info",
+						);
 					} else {
-						ctx.ui.notify("Patch generation skipped. Report saved for manual review.", "info");
+						ctx.ui.notify("Issue submission skipped. You can run /repair-suggest again anytime.", "info");
 					}
 				} else if (implementNow.length === 0 && result.suggestions.length > 0) {
 					if (ctx.hasUI) {
-						ctx.ui.notify("No suggestions recommended for immediate implementation. Review the report manually.", "info");
+						ctx.ui.notify("No suggestions recommended for immediate implementation.", "info");
 					}
 				}
 			} catch (err) {
