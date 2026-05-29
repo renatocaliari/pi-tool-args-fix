@@ -55,6 +55,7 @@ import {
 	ConsecutiveFailureTracker,
 	getToolHelp,
 } from "./recorder.js";
+import type { RepairEvent } from "./recorder.js";
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
@@ -350,223 +351,222 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ─── tool_result: Execution error recording + directory fallback ──
-	pi.on("tool_result", async (event, ctx) => {
-		// ── Phase 1: Extract error info ──────────────────────────────
-		let executionErrorType: string | null = null;
-		let blindspotCategory: string | null = null;
-		let hasError = event.isError ?? false;
+	// ─── tool_result: Execution error recording + directory fallback ──
+//
+// Handler phases:
+//   1. Classify error (pattern matching + CLI filter + safety net)
+//   1.b Track consecutive failures + inject CLI guidance on 2nd+
+//   1.c Detect empty results (analytics only)
+//   2. Handle EISDIR directory fallback (read tool)
+//   3. Record event to JSONL
 
-		if (hasError) {
-			const errorText = extractTextContent(event.content);
-			executionErrorType = classifyErrorType(errorText);
-			blindspotCategory = executionErrorType;
+/** Phase 1: Classify tool result error into canonical type. */
+function classifyToolResultError(
+	event: any,
+): { hasError: boolean; executionErrorType: string | null; blindspotCategory: string | null } {
+	let hasError = event.isError ?? false;
+	let executionErrorType: string | null = null;
+	let blindspotCategory: string | null = null;
 
-			// ── Native CLI false positives filter ──
-			// Pi built-in CLI tools (bash, grep, find, ls) use shell exit codes.
-			// Exit code 1 is conventional for "no results" (grep no match,
-			// find empty, diff with difference, test false), NOT a runtime error.
-			// Only flag as error when classifyErrorType found something concrete
-			// (ENOENT, EACCES, EISDIR, timeout, HTTP_*, etc.).
-			//
-			const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
-			if (NATIVE_CLI_TOOLS.has(event.toolName) && executionErrorType === null) {
-				hasError = false;
-				executionErrorType = null;
-				blindspotCategory = null;
-			}
+	if (!hasError) return { hasError, executionErrorType, blindspotCategory };
 
-			// ── Generic safety net ──
-			// If any tool (native or extension) reports error with no concrete
-			// error text, it's not meaningful to flag as a runtime error.
-			// The model may be getting a bare exit code or a non-standard response.
-			if (hasError && executionErrorType === null && !errorText) {
-				hasError = false;
-				blindspotCategory = null;
-			}
+	const errorText = extractTextContent(event.content);
+	executionErrorType = classifyErrorType(errorText);
+	blindspotCategory = executionErrorType;
+
+	// Native CLI false positives filter: bash/grep/find/ls exit code 1 is "no results", not error
+	if (NATIVE_CLI_TOOLS.has(event.toolName) && executionErrorType === null) {
+		hasError = false;
+		executionErrorType = null;
+		blindspotCategory = null;
+	}
+
+	// Generic safety net: no error text → not meaningful to flag
+	if (hasError && executionErrorType === null && !errorText) {
+		hasError = false;
+		blindspotCategory = null;
+	}
+
+	return { hasError, executionErrorType, blindspotCategory };
+}
+
+/** Phase 1.c: Detect empty results (analytics only). */
+function detectEmptyResult(
+	event: any,
+	err: { hasError: boolean; blindspotCategory: string | null },
+): void {
+	if (err.hasError || err.blindspotCategory !== null) return;
+
+	const resText = extractTextContent(event.content);
+	if (resText && (resText.trim() === "" || resText.trim() === "(no output)")) {
+		err.blindspotCategory = "EMPTY_RESULT";
+	}
+}
+
+/** Build a RepairEvent for a tool_result from handler context. */
+function buildToolResultEvent(
+	event: any,
+	ctx: any,
+	turn: number,
+	err: { hasError: boolean; executionErrorType: string | null; blindspotCategory: string | null },
+	wasHandled: boolean,
+	handleType: string | null,
+	inputKeysOverride?: string[],
+): RepairEvent {
+	return {
+		ts: new Date().toISOString(),
+		eventType: "tool_result",
+		sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+		turnIndex: turn,
+		toolName: event.toolName,
+		provider: ctx.model?.provider ?? "unknown",
+		model: ctx.model?.id ?? "unknown",
+		repairs: [],
+		wasRepaired: false,
+		executionFailed: err.hasError,
+		executionErrorType: err.executionErrorType,
+		wasHandled,
+		handleType,
+		blindspotCategory: err.blindspotCategory,
+		inputKeys: inputKeysOverride ?? Object.keys(event.input ?? {}),
+		inputNullKeys: [],
+		inputExtraProps: [],
+	};
+}
+
+/**
+ * Phase 1.b: Track failures for consecutive detection.
+ * Returns a patched result object when CLI guidance should be injected.
+ */
+function trackAndInterceptFailures(
+	event: any,
+	err: { hasError: boolean; executionErrorType: string | null; blindspotCategory: string | null },
+	failureTracker: ConsecutiveFailureTracker,
+	ctx: any,
+	eventSeq: number,
+): { result?: { content: any; isError: boolean }; eventSeqDelta: number } {
+	const inputKeys = Object.keys(event.input ?? {});
+	let delta = 0;
+
+	if (err.hasError) {
+		const consecutiveCount = failureTracker.recordFailure(event.toolName, inputKeys);
+
+		if (consecutiveCount >= 3) {
+			err.blindspotCategory = "CONSECUTIVE_LOOP";
 		}
 
-		// ── Phase 1.b: Track consecutive failures (loop detection) ──
-		const inputKeys = Object.keys(event.input ?? {});
-		if (hasError) {
-			const consecutiveCount = failureTracker.recordFailure(event.toolName, inputKeys);
+		// CLI guidance: native CLI tools on 2nd+ consecutive failure
+		if (consecutiveCount >= 2 && NATIVE_CLI_TOOLS.has(event.toolName)) {
+			const currentText = extractTextContent(event.content) ?? "";
+			const helpText = getToolHelp(event.toolName);
+			console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
 
-			// Mark as loop if ≥3 consecutive failures
-			if (consecutiveCount >= 3) {
-				blindspotCategory = "CONSECUTIVE_LOOP";
-			}
+			const rec: RepairEvent = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "cli_guidance", inputKeys);
+			recordEvent(rec);
 
-			// For native CLI tools on 2nd+ failure, inject guidance via result content
-			// (same pattern as EISDIR directory fallback — proven safe)
-			if (
-				consecutiveCount >= 2 &&
-				NATIVE_CLI_TOOLS.has(event.toolName)
-			) {
-				const currentText = extractTextContent(event.content) ?? "";
-				const helpText = getToolHelp(event.toolName);
-				console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
-
-				// Record event before returning
-				eventSeq++;
-				const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
-				recordEvent({
-					ts: new Date().toISOString(),
-					eventType: "tool_result",
-					sessionId: resSessionId,
-					turnIndex: eventSeq,
-					toolName: event.toolName,
-					provider: ctx.model?.provider ?? "unknown",
-					model: ctx.model?.id ?? "unknown",
-					repairs: [],
-					wasRepaired: false,
-					executionFailed: true,
-					executionErrorType,
-					wasHandled: true,
-					handleType: "cli_guidance",
-					blindspotCategory: null,
-					inputKeys,
-					inputNullKeys: [],
-					inputExtraProps: [],
-				});
-
-				// Override event content to include help text
-				return {
-					content: [{
-						type: "text" as const,
-						text: `${currentText}\n\n── Tool guidance ──\n${helpText}`
-					}],
+			return {
+				result: {
+					content: [{ type: "text" as const, text: `${currentText}\n\n── Tool guidance ──\n${helpText}` }],
 					isError: true,
-				};
-			}
-		} else {
-			// Success: reset the counter for this tool
-			failureTracker.recordSuccess(event.toolName);
+				},
+				eventSeqDelta: 1,
+			};
+		}
+	} else {
+		failureTracker.recordSuccess(event.toolName);
+	}
+
+	return { eventSeqDelta: 0 };
+}
+
+/**
+ * Phase 2: Handle EISDIR directory fallback (read tool on a directory).
+ * Returns a patched result with directory listing when applicable.
+ */
+async function handleEisdirFallback(
+	event: any,
+	ctx: any,
+	err: { hasError: boolean; executionErrorType: string | null },
+	stats: any,
+): Promise<{ result?: { content: any; isError: boolean }; wasHandled: boolean; handleType: string | null }> {
+	if (event.toolName !== "read" || !err.hasError || err.executionErrorType !== "EISDIR") {
+		return { wasHandled: false, handleType: null };
+	}
+
+	const inputPath = (event.input as Record<string, unknown>)?.path;
+	if (typeof inputPath !== "string" || !inputPath) {
+		return { wasHandled: false, handleType: null };
+	}
+
+	let resolvedPath = inputPath;
+	if (resolvedPath.startsWith("~/")) {
+		const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
+		resolvedPath = path.join(home, resolvedPath.slice(2));
+	}
+
+	try {
+		const stat = await fs.stat(resolvedPath);
+		if (!stat.isDirectory()) return { wasHandled: false, handleType: null };
+
+		const entries = await fs.readdir(resolvedPath);
+		const listing = entries.map((e) => `  ${e}`).join("\n");
+		const dirName = path.basename(resolvedPath);
+
+		const listingContent = [
+			`📁 Directory: ${resolvedPath}`,
+			"",
+			"Contents:",
+			listing,
+			"",
+			`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
+			"",
+			"ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.",
+		].join("\n");
+
+		const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
+		console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
+		recordRepairs(stats, [detail]);
+
+		if (ctx.hasUI) {
+			ctx.ui.setStatus(
+				"repair-layer",
+				ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
+			);
+			setTimeout(() => ctx.ui.setStatus("repair-layer", undefined), 3000);
 		}
 
-		// ── Phase 1.c: Empty result detection ──
-		// If a non-error result has no meaningful output, it could trigger silent loops
-		if (!hasError && blindspotCategory === null) {
-			const resText = extractTextContent(event.content);
-			if (resText && (resText.trim() === "" || resText.trim() === "(no output)")) {
-				// Log as EMPTY_RESULT blindspot for analytics only — don't change behavior
-				blindspotCategory = "EMPTY_RESULT";
-			}
-		}
+		return {
+			result: { content: [{ type: "text" as const, text: listingContent }], isError: false },
+			wasHandled: true,
+			handleType: "directory_fallback",
+		};
+	} catch {
+		return { wasHandled: false, handleType: null };
+	}
+}
 
-		// ── Phase 2: Handle directory fallback (read tool EISDIR) ───
-		let wasHandled = false;
-		let handleType: string | null = null;
+pi.on("tool_result", async (event, ctx) => {
+	const err = classifyToolResultError(event);
+	detectEmptyResult(event, err);
 
-		if (event.toolName === "read" && hasError && executionErrorType === "EISDIR") {
-			// Get the path from the original input
-			const inputPath = (event.input as Record<string, unknown>)?.path;
-			if (typeof inputPath === "string" && inputPath) {
-				// Resolve the path
-				let resolvedPath = inputPath;
-				if (resolvedPath.startsWith("~/")) {
-					const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
-					resolvedPath = path.join(home, resolvedPath.slice(2));
-				}
+	// Phase 1.b: consecutive failure tracking + CLI guidance interception
+	const intercept = trackAndInterceptFailures(event, err, failureTracker, ctx, eventSeq);
+	if (intercept.eventSeqDelta) eventSeq = eventSeq + intercept.eventSeqDelta;
+	if (intercept.result) return intercept.result;
 
-				try {
-					const stat = await fs.stat(resolvedPath);
-					if (stat.isDirectory()) {
-						// It's a directory — list its contents
-						const entries = await fs.readdir(resolvedPath);
-						const listing = entries.map((e) => `  ${e}`).join("\n");
-						const dirName = path.basename(resolvedPath);
+	// Phase 2: EISDIR directory fallback
+	const fallback = await handleEisdirFallback(event, ctx, err, stats);
+	if (fallback.result) {
+		const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "directory_fallback");
+		recordEvent(rec);
+		return fallback.result;
+	}
 
-						const listingContent = [
-							`📁 Directory: ${resolvedPath}`,
-							``,
-							"Contents:",
-							listing,
-							``,
-							`${entries.length} entr${entries.length === 1 ? "y" : "ies"} total.`,
-							``,
-							`ℹ️ The model called read on a directory. Use bash ls or read with a specific file path inside this directory.`,
-						].join("\n");
-
-						// Log and track stats
-						const detail = `${dirName}: directory fallback (${entries.length} entries listed)`;
-						console.error(`[repair-layer] tool_result_modified:read - ${detail}`);
-						recordRepairs(stats, [detail]);
-
-						if (ctx.hasUI) {
-							ctx.ui.setStatus(
-								"repair-layer",
-								ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
-							);
-							setTimeout(() => {
-								ctx.ui.setStatus("repair-layer", undefined);
-							}, 3000);
-						}
-
-						wasHandled = true;
-						handleType = "directory_fallback";
-						blindspotCategory = null; // No longer a blindspot
-
-						// Record handled event
-						eventSeq++;
-						const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
-						recordEvent({
-							ts: new Date().toISOString(),
-							eventType: "tool_result",
-							sessionId: resSessionId,
-							turnIndex: eventSeq,
-							toolName: event.toolName,
-							provider: ctx.model?.provider ?? "unknown",
-							model: ctx.model?.id ?? "unknown",
-							repairs: [],
-							wasRepaired: false,
-							executionFailed: false,
-							executionErrorType: null,
-							wasHandled: true,
-							handleType: "directory_fallback",
-							blindspotCategory: null,
-							inputKeys: Object.keys(event.input ?? {}),
-							inputNullKeys: [],
-							inputExtraProps: [],
-						});
-
-						// Return patched result: clear error, provide listing
-						return {
-							content: [{ type: "text", text: listingContent }],
-							isError: false,
-						};
-					}
-					// Not a directory — fall through to error recording
-				} catch {
-					// stat or readdir failed — fall through to error recording
-				}
-			}
-			// Input path was invalid or stat failed — fall through to error recording
-		}
-
-		// ── Phase 3: Record event (error or success) ──────────────────
-		eventSeq++;
-		const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
-		recordEvent({
-			ts: new Date().toISOString(),
-			eventType: "tool_result",
-			sessionId: resSessionId,
-			turnIndex: eventSeq,
-			toolName: event.toolName,
-			provider: ctx.model?.provider ?? "unknown",
-			model: ctx.model?.id ?? "unknown",
-			repairs: [],
-			wasRepaired: false,
-			executionFailed: hasError,
-			executionErrorType,
-			wasHandled,
-			handleType,
-			blindspotCategory,
-			inputKeys: Object.keys(event.input ?? {}),
-			inputNullKeys: [],
-			inputExtraProps: [],
-		});
-
-		return undefined;
-	});
+	// Phase 3: Record event
+	const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, false, null);
+	recordEvent(rec);
+	return undefined;
+});
 
 	// ─── Command: in-memory session repair stats ─────────────────────
 	pi.registerCommand("repair-stats", {

@@ -320,6 +320,21 @@ export function applyRelationalDefaults(args: Record<string, unknown>): Record<s
 
 // ─── Field Classification ────────────────────────────────────────────────
 
+/** Returns true when the field name signals an array-like field. */
+function isArrayLike(key: string, lower: string): boolean {
+  return (
+    ARRAY_FIELD_NAMES.has(key) ||
+    lower.endsWith("_list") ||
+    lower.endsWith("list") ||
+    lower.endsWith("_names") ||
+    lower.endsWith("names") ||
+    lower.endsWith("_items") ||
+    lower.endsWith("items") ||
+    lower.endsWith("_array") ||
+    lower.endsWith("array")
+  );
+}
+
 /**
  * Classify a field and determine which repairs to apply.
  */
@@ -345,40 +360,9 @@ export function classifyField(
     actions.push("parse-json");
   }
 
-  // Fields that expect arrays
-  if (
-    ARRAY_FIELD_NAMES.has(key) ||
-    lower.endsWith("_list") ||
-    lower.endsWith("list") ||
-    lower.endsWith("_names") ||
-    lower.endsWith("names") ||
-    lower.endsWith("_items") ||
-    lower.endsWith("items") ||
-    lower.endsWith("_array") ||
-    lower.endsWith("array")
-  ) {
-    actions.push("wrap-array");
-    actions.push("wrap-object-as-array");
-  }
-
-  // Explicit array suffix patterns
-  if (lower.endsWith("_array") || lower.endsWith("array")) {
-    actions.push("parse-json", "wrap-array", "wrap-object-as-array");
-  }
-
-  // Array fields that might receive comma/space-separated strings
-  if (
-    ARRAY_FIELD_NAMES.has(key) ||
-    lower.endsWith("_list") ||
-    lower.endsWith("list") ||
-    lower.endsWith("_names") ||
-    lower.endsWith("names") ||
-    lower.endsWith("_items") ||
-    lower.endsWith("items") ||
-    lower.endsWith("_array") ||
-    lower.endsWith("array")
-  ) {
-    actions.push("split-string-to-array");
+  // Array-like fields: wrap + split
+  if (isArrayLike(key, lower)) {
+    actions.push("wrap-array", "wrap-object-as-array", "split-string-to-array");
   }
 
   // Array fields with known item schemas: strip extra properties from items

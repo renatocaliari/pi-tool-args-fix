@@ -12,7 +12,11 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isEisdirError } from "./repairs.js";
+import { getSuggestion } from "./recorder/classifier.js";
+
+// Re-export from sub-modules for backward compatibility
+export { classifyErrorType, getToolHelp, getSuggestion } from "./recorder/classifier.js";
+export { ConsecutiveFailureTracker } from "./recorder/tracker.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -48,33 +52,36 @@ export interface RepairEvent {
    *  - "400"     (bad request → candidate: argument reordering)
    *  - "model_domain_list"  (model sends comma-sep string for array field)
    *  - "model_null_field"   (model sends null for optional param)
+   *  - "model_bare_array"   (model sends bare value for array field)
+   *  - "model_json_string"  (model sends stringified JSON instead of object)
+   *  - "model_extra_props"  (model sends extra properties in array items)
+   *  - "model_boolean_string" (model sends boolean as string "true"/"false")
+   *  - "model_number_string" (model sends number as string "42"/"3.14")
    */
   blindspotCategory: string | null;
 
-  /** Input shape — structural fingerprint for pattern detection. */
+  // input fingerprinting
   inputKeys: string[];
   inputNullKeys: string[];
   inputExtraProps: string[];
 }
 
-/** Aggregate stats across a single session or globally. */
+/** Aggregated stats for one or more sessions. */
 export interface AggregateStats {
   totalCalls: number;
   totalRepairs: number;
   totalErrors: number;
   totalHandled: number;
-
-  /** { toolName → callCount } */
-  byTool: Record<string, { calls: number; repairs: number; errors: number }>;
-  /** { "provider/model" → callCount } */
+  byTool: Record<
+    string,
+    { calls: number; repairs: number; errors: number; handled: number }
+  >;
   byModel: Record<string, number>;
-  /** { repairType → count } */
   byRepairType: Record<string, number>;
-  /** { errorType → count } */
   byErrorType: Record<string, number>;
 }
 
-/** A detected blindspot — errors without repair coverage. */
+/** A blindspot — error pattern without repair coverage. */
 export interface Blindspot {
   category: string;
   toolName: string;
@@ -84,34 +91,6 @@ export interface Blindspot {
   example: string;
   models: string[];
   suggestion: string;
-}
-
-// ─── Error Classification ────────────────────────────────────────────────
-
-/**
- * Classify a tool result error message into a canonical error type.
- * Used for blindspot detection and error aggregation.
- *
- * This is a pure pattern-matching function — it NEVER looks at toolName.
- * That keeps it generic: any tool's error text is classified identically.
- */
-export function classifyErrorType(errorText: string | null): string | null {
-	if (!errorText) return null;
-	if (isEisdirError(errorText)) return "EISDIR";
-	const lower = errorText.toLowerCase();
-	if (lower.includes("no such file") || lower.includes("not found") || lower.includes("enoent")) return "ENOENT";
-	if (lower.includes("permission denied") || lower.includes("eacces") || lower.includes("eperm")) return "EACCES";
-	if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
-	if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
-	if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
-	// Edit text mismatch — model tried to replace text that doesn't match exactly
-	if (lower.includes("could not find the exact text") || lower.includes("oldtext does not match")) return "EDIT_MISMATCH";
-	// Schema validation errors — model sent arguments that violate the tool's JSON schema
-	if (lower.includes("validation failed") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
-	// HTTP status codes in error text
-	const httpMatch = lower.match(/\b([45]\d{2})\b/);
-	if (httpMatch) return `HTTP_${httpMatch[1]}`;
-	return null;
 }
 
 // ─── Path Resolution ──────────────────────────────────────────────────────
@@ -126,15 +105,18 @@ export function sessionLogPath(sessionId: string): string {
 
 // ─── I/O ──────────────────────────────────────────────────────────────────
 
-/** Ensure repair-log directory exists. Sync to avoid race on first call. */
-export function ensureDir(): void {
-  const dir = getRepairLogDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+export function ensureDir(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
-/** Append one event as a JSON line. Non-blocking; fire-and-forget. */
+/**
+ * Append one event to the session log.
+ * Creates the log directory if needed.
+ * @param event — the event to persist
+ * @param logDir — custom log directory (default: .pi/repair-log/)
+ */
 export function recordEvent(event: RepairEvent, logDir?: string): void {
   try {
     const sid = event.sessionId || "unknown";
@@ -150,108 +132,96 @@ export function recordEvent(event: RepairEvent, logDir?: string): void {
   }
 }
 
-/** Read all events for one session, most recent first. */
-export function readSessionEvents(sessionId: string, logDir?: string): RepairEvent[] {
-  const logPath = logDir
-    ? path.join(logDir, `${sessionId}.jsonl`)
-    : sessionLogPath(sessionId);
+/**
+ * Read all events for a session, most recent first.
+ * Returns an empty array if the session has no logs.
+ */
+export function readSessionEvents(
+  sessionId: string,
+  logDir?: string,
+): RepairEvent[] {
+  const dir = logDir ?? getRepairLogDir();
+  const logPath = path.join(dir, `${sessionId}.jsonl`);
+
   if (!fs.existsSync(logPath)) return [];
+
   const raw = fs.readFileSync(logPath, "utf-8").trim();
   if (!raw) return [];
-  return raw
-    .split("\n")
-    .map((line) => {
-      try {
-        return JSON.parse(line) as RepairEvent;
-      } catch {
-        return null;
-      }
-    })
-    .filter((e): e is RepairEvent => e !== null)
-    .reverse();
+
+  const lines = raw.split("\n");
+  const events: RepairEvent[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as RepairEvent;
+      events.push(parsed);
+    } catch {
+      // Skip malformed lines silently
+    }
+  }
+
+  // Most recent first
+  return events.reverse();
 }
 
-/** Read all events across all session files. */
+/**
+ * Read all events across ALL session logs in the repair log directory.
+ */
 export function readAllEvents(logDir?: string): RepairEvent[] {
   const dir = logDir ?? getRepairLogDir();
   if (!fs.existsSync(dir)) return [];
 
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
-  } catch {
-    return [];
-  }
-
+  const sessions = fs.readdirSync(dir);
   const all: RepairEvent[] = [];
-  for (const file of files) {
-    const filePath = path.join(dir, file);
-    try {
-      const raw = fs.readFileSync(filePath, "utf-8").trim();
-      if (!raw) continue;
-      const events = raw
-        .split("\n")
-        .map((line) => {
-          try {
-            return JSON.parse(line) as RepairEvent;
-          } catch {
-            return null;
-          }
-        })
-        .filter((e): e is RepairEvent => e !== null);
-      all.push(...events);
-    } catch {
-      // Skip unreadable files
-    }
+
+  for (const file of sessions) {
+    if (!file.endsWith(".jsonl")) continue;
+    const sessionId = file.replace(".jsonl", "");
+    const events = readSessionEvents(sessionId, dir);
+    all.push(...events);
   }
 
-  return all.reverse();
+  return all;
 }
 
 /**
- * Delete expired session logs beyond the retention limit.
- * Returns the number of sessions pruned.
+ * Prune old session logs, keeping only the most recent N.
  */
-export function pruneOldSessions(maxSessions: number = 50, logDir?: string): number {
+export function pruneOldSessions(
+  keep: number,
+  logDir?: string,
+): number {
   const dir = logDir ?? getRepairLogDir();
   if (!fs.existsSync(dir)) return 0;
 
-  let files: fs.Dirent[];
-  try {
-    files = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  // Group by session ID: keep only .jsonl files, one per session
-  const sessionFiles = files
-    .filter((f) => f.isFile() && f.name.endsWith(".jsonl"))
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".jsonl"))
     .map((f) => ({
-      name: f.name,
-      sessionId: f.name.replace(/\.jsonl$/, ""),
-      mtime: fs.statSync(path.join(dir, f.name)).mtimeMs,
+      name: f,
+      mtime: fs.statSync(path.join(dir, f)).mtimeMs,
     }))
-    .sort((a, b) => b.mtime - a.mtime); // newest first
-
-  if (sessionFiles.length <= maxSessions) return 0;
+    .sort((a, b) => b.mtime - a.mtime);
 
   let removed = 0;
-  for (const file of sessionFiles.slice(maxSessions)) {
+  for (const file of files.slice(keep)) {
+    const logPath = path.join(dir, file.name);
+    const metaPath = path.join(dir, file.name.replace(".jsonl", ".meta.json"));
     try {
-      fs.unlinkSync(path.join(dir, file.name));
-      removed++;
-      const metaPath = path.join(dir, file.sessionId + ".meta.json");
+      fs.unlinkSync(logPath);
       if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+      removed++;
     } catch {
-      // Best-effort cleanup
+      // Best effort — skip files that can't be removed
     }
   }
+
   return removed;
 }
 
-// ─── Aggregation ──────────────────────────────────────────────────────────
+// ─── Analysis ─────────────────────────────────────────────────────────────
 
-/** Aggregate events into stats. */
+/** Aggregate a list of events into summary stats. */
 export function aggregateStats(events: RepairEvent[]): AggregateStats {
   const stats: AggregateStats = {
     totalCalls: 0,
@@ -264,65 +234,52 @@ export function aggregateStats(events: RepairEvent[]): AggregateStats {
     byErrorType: {},
   };
 
+  if (events.length === 0) return stats;
+
   for (const evt of events) {
     stats.totalCalls++;
 
-    if (evt.wasRepaired) stats.totalRepairs++;
-    if (evt.executionFailed) stats.totalErrors++;
-    if (evt.wasHandled) stats.totalHandled++;
-
-    // By tool
+    // Per-tool stats
     if (!stats.byTool[evt.toolName]) {
-      stats.byTool[evt.toolName] = { calls: 0, repairs: 0, errors: 0 };
+      stats.byTool[evt.toolName] = { calls: 0, repairs: 0, errors: 0, handled: 0 };
     }
     stats.byTool[evt.toolName].calls++;
-    if (evt.wasRepaired) stats.byTool[evt.toolName].repairs++;
-    if (evt.executionFailed) stats.byTool[evt.toolName].errors++;
 
-    // By model
-    const modelKey = `${evt.provider}/${evt.model}`;
-    stats.byModel[modelKey] = (stats.byModel[modelKey] ?? 0) + 1;
+    // Repair stats
+    if (evt.wasRepaired && evt.eventType === "tool_call") {
+      stats.totalRepairs++;
+      stats.byTool[evt.toolName].repairs++;
 
-    // By repair type
-    const repairTypes = extractRepairTypes(evt.repairs);
-    for (const rt of repairTypes) {
-      stats.byRepairType[rt] = (stats.byRepairType[rt] ?? 0) + 1;
+      // Granular repair types
+      const repairTypes = extractRepairTypes(evt.repairs);
+      for (const type of repairTypes) {
+        stats.byRepairType[type] = (stats.byRepairType[type] ?? 0) + 1;
+      }
     }
 
-    // By error type
-    if (evt.executionErrorType) {
-      stats.byErrorType[evt.executionErrorType] =
-        (stats.byErrorType[evt.executionErrorType] ?? 0) + 1;
+    // Error stats (only on tool_result with executionFailed)
+    if (evt.executionFailed) {
+      stats.totalErrors++;
+      stats.byTool[evt.toolName].errors++;
+
+      const errorType = evt.executionErrorType ?? "unknown";
+      stats.byErrorType[errorType] = (stats.byErrorType[errorType] ?? 0) + 1;
+    }
+
+    // Handler stats
+    if (evt.wasHandled) {
+      stats.totalHandled++;
+      stats.byTool[evt.toolName].handled++;
+    }
+
+    // Per-model stats (exclude test models)
+    const modelId = `${evt.provider}/${evt.model}`;
+    if (!modelId.includes("test")) {
+      stats.byModel[modelId] = (stats.byModel[modelId] ?? 0) + 1;
     }
   }
 
   return stats;
-}
-
-// ─── Blindspot Detection ──────────────────────────────────────────────────
-
-/** Blindspot suggestions mapped by category. */
-const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
-  EISDIR: "Add directory-listing fallback for read tool (similar to current EISDIR handler but as a documented pattern check).",
-  ENOENT: "Consider fuzzy path matching: retry with relative path, check common parent dirs.",
-  timeout: "Add auto-timeout extension for known long-running tools (build, test, lint).",
-  "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
-  SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
-  CONSECUTIVE_LOOP: "The model is calling the same tool repeatedly with identical arguments and every call fails. The failure tracker can inject guidance or circuit-break after N attempts.",
-  EMPTY_RESULT: "The tool returned successfully but with empty output — this can trigger silent loops where the model varies parameters endlessly looking for results.",
-  model_null_field: "Add null-stripping in tool_call handler (already done for some fields — expand coverage to all optional fields).",
-  model_domain_list: "Add comma/space-split to array repair (already done for some fields — verify field name coverage).",
-  model_bare_array: "Add bare-string → array wrapping for this field (check ARRAY_FIELD_NAMES coverage).",
-  model_json_string: "Add JSON string parsing for deeply nested stringified objects.",
-  model_extra_props: "Add extra-property stripping in array items for this field (check ARRAY_ITEM_SCHEMAS coverage).",
-  model_boolean_string: "Add boolean coercion for this field (check BOOLEAN_FIELD_NAMES coverage).",
-  model_number_string: "Add number coercion for this field (check NUMBER_FIELD_NAMES coverage).",
-};
-
-/** Get a suggestion text for a blindspot category. */
-export function getSuggestion(category: string, toolName: string): string {
-  if (BLINDSPOT_SUGGESTIONS[category]) return BLINDSPOT_SUGGESTIONS[category];
-  return `Investigate ${toolName} errors with category "${category}" — no predefined suggestion exists.`;
 }
 
 /** Extract repair action names from repair detail strings. */
@@ -578,128 +535,6 @@ export function formatBlindspots(spots: Blindspot[]): string {
 
   lines.push(`Total: ${spots.length} blindspot(s) detected.`);
   return lines.join("\n");
-}
-
-// ─── Consecutive Failure Tracker ──────────────────────────────────────────
-
-/**
- * Track consecutive failures per tool for loop detection.
- *
- * Pure in-memory tracker. The tracker detects when an LLM agent calls the
- * same tool repeatedly and each call fails — a common failure mode where
- * the model enters an unproductive retry loop.
- *
- * Threshold: after CONSECUTIVE_LIMIT (3) identical failures, the event is
- * marked as `CONSECUTIVE_LOOP` and further guidance can be injected.
- */
-const CONSECUTIVE_LIMIT = 3;
-
-/** Track consecutive failures per tool. Thread-safe (single-threaded Node). */
-export class ConsecutiveFailureTracker {
-  /** toolName → current consecutive failure count */
-  private counts = new Map<string, number>();
-  /** toolName → last fingerprint (reset on change of arg pattern) */
-  private lastFingerprint = new Map<string, string>();
-
-  /**
-   * Record a failure. Returns the consecutive count for this tool.
-   * Count resets to 1 if:
-   *   - A different tool is called
-   *   - The arg pattern changes significantly (different keys)
-   *   - The previous call succeeded
-   */
-  recordFailure(toolName: string, inputKeys: string[]): number {
-    const fp = inputKeys.sort().join(",");
-    const prevFp = this.lastFingerprint.get(toolName);
-
-    if (prevFp !== undefined && prevFp !== fp) {
-      // Arg pattern changed — this is a new attempt, not a retry
-      this.counts.set(toolName, 1);
-    } else {
-      const current = this.counts.get(toolName) ?? 0;
-      this.counts.set(toolName, current + 1);
-    }
-
-    this.lastFingerprint.set(toolName, fp);
-    return this.counts.get(toolName)!;
-  }
-
-  /**
-   * Record a success — resets the count for this tool.
-   */
-  recordSuccess(toolName: string): void {
-    this.counts.set(toolName, 0);
-  }
-
-  /** Get the current consecutive count for a tool (0 if none). */
-  getCount(toolName: string): number {
-    return this.counts.get(toolName) ?? 0;
-  }
-
-  /**
-   * Check if this tool is in a consecutive failure loop.
-   */
-  isInLoop(toolName: string): boolean {
-    return (this.counts.get(toolName) ?? 0) >= CONSECUTIVE_LIMIT;
-  }
-
-  /** Reset all state (e.g. at session start). */
-  reset(): void {
-    this.counts.clear();
-    this.lastFingerprint.clear();
-  }
-}
-
-// ─── CLI Help Text ───────────────────────────────────────────────────────────
-
-/**
- * Return contextual guidance text for a native CLI tool.
- * Used when a CLI tool fails consecutively — instead of showing a bare
- * error, the model gets structured guidance on how to use the tool.
- */
-export function getToolHelp(toolName: string, failedCommand?: string): string {
-  const common = "Consider checking the command syntax, file paths, and permissions.";
-
-  switch (toolName) {
-    case "bash":
-      return (
-        `The bash tool runs shell commands. It exited with a non-zero status.` +
-        (failedCommand
-          ? ` The failed command was: ${failedCommand.slice(0, 100)}`
-          : "") +
-        ` Possible causes:\n` +
-        `  - Command not found or typo in command name\n` +
-        `  - File or directory not found\n` +
-        `  - Permission denied (not executable / restricted path)\n` +
-        `  - Invalid arguments to the command\n` +
-        `  - Exit code 1 is normal for grep (no matches), find (empty), diff (difference)\n` +
-        `To debug, try: running the command with simpler arguments, checking file paths, or using 'command --help'`
-      );
-    case "grep":
-      return (
-        `The grep tool searches for patterns in files.` +
-        `\n  - Exit code 0: match(es) found` +
-        `\n  - Exit code 1: no matches found (this is NORMAL, not an error)` +
-        `\n  - Exit code 2: error (e.g. file not found, invalid pattern)` +
-        `\nTip: If the pattern wasn't found, try a broader pattern, check the file path, or use grep -i for case-insensitive search.`
-      );
-    case "find":
-      return (
-        `The find tool searches for files/directories matching criteria.` +
-        `\n  - Exit code 0: results found (or no criteria matched)` +
-        `\n  - Exit code 1: no files matched (this is NORMAL)` +
-        `\nTip: If nothing was found, try broadening the search path or using less restrictive filters.`
-      );
-    case "ls":
-      return (
-        `The ls tool lists directory contents.` +
-        `\n  - Exit code 0: success` +
-        `\n  - Exit code 1: minor issue (e.g. no match with glob pattern — NORMAL)` +
-        `\nTip: Check the directory path exists and you have read permission.`
-      );
-    default:
-      return common;
-  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

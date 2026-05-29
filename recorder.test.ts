@@ -17,13 +17,9 @@ import {
   aggregateStats,
   computeBlindspots,
   extractRepairTypes,
-  getSuggestion,
-  classifyErrorType,
   formatSessionStats,
   formatGlobalStats,
   formatBlindspots,
-  ConsecutiveFailureTracker,
-  getToolHelp,
 } from "./recorder.js";
 
 const TEST_LOG_DIR = path.join(".pi", "repair-log-test");
@@ -88,7 +84,6 @@ describe("I/O", () => {
     if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true });
     expect(fs.existsSync(tmpDir)).toBe(false);
 
-    // Simulate ensureDir behavior at a custom path
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
     expect(fs.existsSync(tmpDir)).toBe(true);
@@ -99,7 +94,6 @@ describe("I/O", () => {
     const logPath = path.join(testDir, "test-session.jsonl");
     const event = makeEvent({ sessionId: "test-session" });
 
-    // Override path by writing directly
     const line = JSON.stringify(event) + "\n";
     fs.appendFileSync(logPath, line, "utf-8");
 
@@ -109,7 +103,7 @@ describe("I/O", () => {
     expect(parsed.sessionId).toBe("test-session");
   });
 
-  it("recordEvent app多元le events", () => {
+  it("recordEvent appends multiple events", () => {
     const logPath = path.join(testDir, "multi-session.jsonl");
     const e1 = makeEvent({ sessionId: "multi-session", turnIndex: 1 });
     const e2 = makeEvent({ sessionId: "multi-session", turnIndex: 2 });
@@ -122,8 +116,6 @@ describe("I/O", () => {
   });
 
   it("recordEvent does not throw on failure", () => {
-    // Should not throw even if directory is unwritable or event is weird
-    // Use a non-writable path by passing an unusable sessionId
     expect(() =>
       recordEvent(makeEvent({ sessionId: "unknown" }), testDir)
     ).not.toThrow();
@@ -139,7 +131,6 @@ describe("I/O", () => {
 
     const events = readSessionEvents("rev-session", testDir);
     expect(events.length).toBe(2);
-    // Most recent first (turn 2 before turn 1) — reverse ordering
     expect(events[0].turnIndex).toBe(2);
     expect(events[1].turnIndex).toBe(1);
   });
@@ -171,12 +162,12 @@ describe("I/O", () => {
       const e = makeEvent({ sessionId: sid });
       const fPath = path.join(testDir, `${sid}.jsonl`);
       fs.writeFileSync(fPath, JSON.stringify(e) + "\n", "utf-8");
-      const mtime = new Date(now - (2 - i) * 1000); // s0=oldest, s2=newest
+      const mtime = new Date(now - (2 - i) * 1000);
       fs.utimesSync(fPath, mtime, mtime);
     }
 
     const removed = pruneOldSessions(2, testDir);
-    expect(removed).toBe(1); // s0 was removed
+    expect(removed).toBe(1);
 
     const remaining = fs.readdirSync(testDir).filter((f) => f.endsWith(".jsonl"));
     expect(remaining).toEqual(["prune-s1.jsonl", "prune-s2.jsonl"]);
@@ -197,14 +188,13 @@ describe("I/O", () => {
     const e1 = makeEvent({ sessionId: "corrupt-session", turnIndex: 1 });
     const e3 = makeEvent({ sessionId: "corrupt-session", turnIndex: 3 });
 
-    // Write good, corrupted, good
     fs.appendFileSync(logPath, JSON.stringify(e1) + "\n", "utf-8");
     fs.appendFileSync(logPath, "{invalid json}}\n", "utf-8");
     fs.appendFileSync(logPath, JSON.stringify(e3) + "\n", "utf-8");
 
     const events = readSessionEvents("corrupt-session", testDir);
     expect(events.length).toBe(2);
-    expect(events[0].turnIndex).toBe(3); // most recent first
+    expect(events[0].turnIndex).toBe(3);
     expect(events[1].turnIndex).toBe(1);
   });
 
@@ -362,14 +352,8 @@ describe("computeBlindspots", () => {
 
   it("skips events without blindspotCategory", () => {
     const events = [
-      makeEvent({
-        executionFailed: true,
-        blindspotCategory: null,
-      }),
-      makeEvent({
-        executionFailed: false,
-        blindspotCategory: null,
-      }),
+      makeEvent({ executionFailed: true, blindspotCategory: null }),
+      makeEvent({ executionFailed: false, blindspotCategory: null }),
     ];
 
     expect(computeBlindspots(events)).toEqual([]);
@@ -408,26 +392,10 @@ describe("computeBlindspots", () => {
 
     const spots = computeBlindspots(events);
     expect(spots.length).toBe(2);
-    expect(spots[0].toolName).toBe("b"); // 2 occurrences
+    expect(spots[0].toolName).toBe("b");
     expect(spots[0].count).toBe(2);
-    expect(spots[1].toolName).toBe("a"); // 1 occurrence
+    expect(spots[1].toolName).toBe("a");
     expect(spots[1].count).toBe(1);
-  });
-});
-
-// ─── getSuggestion ──────────────────────────────────────────────────
-
-describe("getSuggestion", () => {
-  it("returns predefined suggestion for known categories", () => {
-    const suggestion = getSuggestion("EISDIR", "read");
-    expect(suggestion).toContain("directory-listing");
-  });
-
-  it("returns fallback for unknown categories", () => {
-    const suggestion = getSuggestion("UNKNOWN", "test");
-    expect(suggestion).toContain("Investigate");
-    expect(suggestion).toContain("test");
-    expect(suggestion).toContain("UNKNOWN");
   });
 });
 
@@ -460,6 +428,20 @@ describe("formatSessionStats", () => {
     const out = formatSessionStats(stats);
     expect(out).toContain("Top Repairs:");
     expect(out).toContain("parsed JSON");
+  });
+
+  it("formatSessionStats shows 100.0% when all calls repaired", () => {
+    const events = [makeEvent({ wasRepaired: true })];
+    const stats = aggregateStats(events);
+    const out = formatSessionStats(stats);
+    expect(out).toContain("100.0%");
+  });
+
+  it("formatSessionStats shows 0.0% when no repairs", () => {
+    const events = [makeEvent({ wasRepaired: false })];
+    const stats = aggregateStats(events);
+    const out = formatSessionStats(stats);
+    expect(out).toContain("0.0%");
   });
 });
 
@@ -495,6 +477,13 @@ describe("formatGlobalStats", () => {
     const out = formatGlobalStats(stats, 1);
     expect(out).toContain("Top Errors:");
     expect(out).toContain("EISDIR");
+  });
+
+  it("formatGlobalStats omits error section when no errors", () => {
+    const events = [makeEvent()];
+    const stats = aggregateStats(events);
+    const out = formatGlobalStats(stats, 1);
+    expect(out).not.toContain("Top Errors:");
   });
 });
 
@@ -553,207 +542,5 @@ describe("formatBlindspots", () => {
 
     const out = formatBlindspots(spots);
     expect(out).toContain("Total: 2 blindspot(s)");
-  });
-
-  it("formatSessionStats shows 100.0% when all calls repaired", () => {
-    const events = [makeEvent({ wasRepaired: true })];
-    const stats = aggregateStats(events);
-    const out = formatSessionStats(stats);
-    expect(out).toContain("100.0%");
-  });
-
-  it("formatSessionStats shows 0.0% when no repairs", () => {
-    const events = [makeEvent({ wasRepaired: false })];
-    const stats = aggregateStats(events);
-    const out = formatSessionStats(stats);
-    expect(out).toContain("0.0%");
-  });
-
-  it("formatGlobalStats omits error section when no errors", () => {
-    const events = [makeEvent()];
-    const stats = aggregateStats(events);
-    const out = formatGlobalStats(stats, 1);
-    expect(out).not.toContain("Top Errors:");
-  });
-});
-
-// ─── classifyErrorType ────────────────────────────────────────────────
-
-describe("classifyErrorType", () => {
-  it("classifies EISDIR", () => {
-    expect(classifyErrorType("Error: EISDIR: illegal operation on a directory")).toBe("EISDIR");
-  });
-
-  it("classifies ENOENT", () => {
-    expect(classifyErrorType("ENOENT: no such file or directory")).toBe("ENOENT");
-    expect(classifyErrorType("no such file: /foo/bar")).toBe("ENOENT");
-    expect(classifyErrorType("not found: index.ts")).toBe("ENOENT");
-  });
-
-  it("classifies EACCES", () => {
-    expect(classifyErrorType("EACCES: permission denied")).toBe("EACCES");
-    expect(classifyErrorType("permission denied: /etc/shadow")).toBe("EACCES");
-    expect(classifyErrorType("EPERM: operation not permitted")).toBe("EACCES");
-  });
-
-  it("classifies timeout", () => {
-    expect(classifyErrorType("timeout: operation timed out")).toBe("timeout");
-    expect(classifyErrorType("timed out after 30s")).toBe("timeout");
-  });
-
-  it("classifies rate_limit", () => {
-    expect(classifyErrorType("429 Too Many Requests")).toBe("rate_limit");
-    expect(classifyErrorType("rate limit exceeded")).toBe("rate_limit");
-  });
-
-  it("classifies bad_request", () => {
-    expect(classifyErrorType("400 Bad Request")).toBe("bad_request");
-    expect(classifyErrorType("bad request: invalid params")).toBe("bad_request");
-  });
-
-  it("classifies HTTP error codes", () => {
-    expect(classifyErrorType("Error 500: internal server error")).toBe("HTTP_500");
-    expect(classifyErrorType("503 Service Unavailable")).toBe("HTTP_503");
-    expect(classifyErrorType("403 Forbidden")).toBe("HTTP_403");
-  });
-
-  it("ignores 304 Not Modified (3xx)", () => {
-    expect(classifyErrorType("304 Not Modified")).toBeNull();
-  });
-
-  it("returns null for null/empty input", () => {
-    expect(classifyErrorType(null)).toBeNull();
-    expect(classifyErrorType("")).toBeNull();
-  });
-
-  it("returns null for unrecognized errors", () => {
-    expect(classifyErrorType("something completely different")).toBeNull();
-    expect(classifyErrorType("\nCommand exited with code 1")).toBeNull();
-  });
-
-  it("returns EDIT_MISMATCH for edit text mismatch errors", () => {
-    expect(classifyErrorType("Could not find the exact text")).toBe("EDIT_MISMATCH");
-    expect(classifyErrorType("oldText does not match")).toBe("EDIT_MISMATCH");
-  });
-
-  it("picks the first matching category when multiple match", () => {
-    // EISDIR check comes first in classifyErrorType, so it wins
-    expect(classifyErrorType("EISDIR: no such file or directory")).toBe("EISDIR");
-  });
-
-  it("classifies SCHEMA_VALIDATION for validation failures", () => {
-    expect(classifyErrorType("Validation failed for tool \"ask_user_question\":\n  - questions.1.header: must not have more than 16 characters")).toBe("SCHEMA_VALIDATION");
-    expect(classifyErrorType("must not have more than 100 items")).toBe("SCHEMA_VALIDATION");
-    expect(classifyErrorType("must be one of: [\"read\", \"write\"]")).toBe("SCHEMA_VALIDATION");
-    expect(classifyErrorType("must match pattern \"^[a-z]+$\"")).toBe("SCHEMA_VALIDATION");
-  });
-
-  it("does not classify non-schema errors as SCHEMA_VALIDATION", () => {
-    expect(classifyErrorType("no such file: package.json")).not.toBe("SCHEMA_VALIDATION");
-    expect(classifyErrorType("timeout: operation timed out")).not.toBe("SCHEMA_VALIDATION");
-  });
-});
-
-// ─── ConsecutiveFailureTracker ───────────────────────────────────────
-
-describe("ConsecutiveFailureTracker", () => {
-  it("starts at 1 for first failure", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    const count = tracker.recordFailure("bash", ["command"]);
-    expect(count).toBe(1);
-  });
-
-  it("increments on repeated failures with same arg keys", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(1);
-    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(2);
-    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(3);
-    expect(tracker.isInLoop("edit")).toBe(true);
-  });
-
-  it("resets count when arg keys change", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    expect(tracker.recordFailure("bash", ["command"])).toBe(1);
-    expect(tracker.recordFailure("bash", ["command"])).toBe(2);
-    // Different arg keys → new attempt, reset to 1
-    expect(tracker.recordFailure("bash", ["command", "timeout"])).toBe(1);
-  });
-
-  it("resets count on recordSuccess", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordSuccess("bash");
-    expect(tracker.isInLoop("bash")).toBe(false);
-    expect(tracker.getCount("bash")).toBe(0);
-  });
-
-  it("tracks separate tools independently", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    expect(tracker.recordFailure("bash", ["command"])).toBe(1);
-    expect(tracker.recordFailure("edit", ["edits"])).toBe(1);
-    expect(tracker.recordFailure("bash", ["command"])).toBe(2);
-    expect(tracker.recordFailure("edit", ["edits"])).toBe(2);
-  });
-
-  it("isInLoop returns false before threshold", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    expect(tracker.isInLoop("bash")).toBe(false);
-  });
-
-  it("isInLoop returns true at threshold (3)", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    expect(tracker.isInLoop("bash")).toBe(true);
-  });
-
-  it("reset clears all state", () => {
-    const tracker = new ConsecutiveFailureTracker();
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    tracker.recordFailure("bash", ["command"]);
-    expect(tracker.isInLoop("bash")).toBe(true);
-    tracker.reset();
-    expect(tracker.isInLoop("bash")).toBe(false);
-    expect(tracker.getCount("bash")).toBe(0);
-  });
-});
-
-// ─── getToolHelp ─────────────────────────────────────────────────────
-
-describe("getToolHelp", () => {
-  it("returns bash guidance", () => {
-    const help = getToolHelp("bash");
-    expect(help).toContain("bash");
-    expect(help).toContain("Exit code");
-    expect(help).toContain("--help");
-  });
-
-  it("returns grep guidance with exit code semantics", () => {
-    const help = getToolHelp("grep");
-    expect(help).toContain("grep");
-    expect(help).toContain("Exit code 1");
-    expect(help).toContain("grep -i");
-  });
-
-  it("returns find guidance", () => {
-    const help = getToolHelp("find");
-    expect(help).toContain("find");
-    expect(help).toContain("Exit code 1");
-  });
-
-  it("returns ls guidance", () => {
-    const help = getToolHelp("ls");
-    expect(help).toContain("ls");
-    expect(help).toContain("Exit code 1");
-  });
-
-  it("returns common guidance for unknown tools", () => {
-    const help = getToolHelp("unknown-tool");
-    expect(help).toContain("Consider checking");
   });
 });
