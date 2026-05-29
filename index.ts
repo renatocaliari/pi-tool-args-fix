@@ -59,6 +59,8 @@ import type { RepairEvent } from "./recorder.js";
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
+/** Tools that get guidance injection on consecutive failures (includes CLI + edit/read/write). */
+const GUIDANCE_TOOLS = new Set([...NATIVE_CLI_TOOLS, "edit", "read", "write"]);
 
 
 
@@ -455,8 +457,8 @@ function trackAndInterceptFailures(
 			err.blindspotCategory = "CONSECUTIVE_LOOP";
 		}
 
-		// CLI guidance: native CLI tools on 2nd+ consecutive failure
-		if (consecutiveCount >= 2 && NATIVE_CLI_TOOLS.has(event.toolName)) {
+		// Guidance: native tools on 2nd+ consecutive failure
+		if (consecutiveCount >= 2 && GUIDANCE_TOOLS.has(event.toolName)) {
 			const currentText = extractTextContent(event.content) ?? "";
 			const helpText = getToolHelp(event.toolName);
 			console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);

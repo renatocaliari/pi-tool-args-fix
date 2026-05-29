@@ -139,6 +139,25 @@ describe("getToolHelp", () => {
     expect(help).toContain("Exit code 1");
   });
 
+  it("returns edit guidance about re-reading the file", () => {
+    const help = getToolHelp("edit");
+    expect(help).toContain("edit");
+    expect(help).toContain("oldText");
+    expect(help).toContain("read");
+  });
+
+  it("returns read guidance about file existence", () => {
+    const help = getToolHelp("read");
+    expect(help).toContain("read");
+    expect(help).toContain("does not exist");
+  });
+
+  it("returns write guidance about permissions", () => {
+    const help = getToolHelp("write");
+    expect(help).toContain("write");
+    expect(help).toContain("Permission denied");
+  });
+
   it("returns generic guidance for unknown tools", () => {
     const help = getToolHelp("rsync");
     expect(help).toContain("Consider checking");

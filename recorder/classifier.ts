@@ -107,6 +107,30 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
         `\n  - Exit code 1: minor issue (e.g. no match with glob pattern — NORMAL)` +
         `\nTip: Check the directory path exists and you have read permission.`
       );
+    case "edit":
+      return (
+        `The edit tool replaces exact text in a file. It failed because the oldText was not found.` +
+        `\nCommon causes:` +
+        `\n  - The text has already been modified by a previous edit` +
+        `\n  - The text differs from the file content (whitespace, quotes, indentation)` +
+        `\n  - The file was modified externally` +
+        `\nTo fix: read the file first with the read tool to get the current content, then use the exact text as oldText.`
+      );
+    case "read":
+      return (
+        `The read tool reads file contents.` +
+        `\nCommon issues:` +
+        `\n  - File does not exist (check the path)` +
+        `\n  - Permission denied (check file permissions)` +
+        `\n  - Directory passed instead of file (use ls to list directory contents)`
+      );
+    case "write":
+      return (
+        `The write tool creates or overwrites a file.` +
+        `\nCommon issues:` +
+        `\n  - Permission denied (check directory permissions)` +
+        `\n  - Directory does not exist (create parent directories first)`
+      );
     default:
       return common;
   }
