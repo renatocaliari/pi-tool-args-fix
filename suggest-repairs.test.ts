@@ -6,6 +6,7 @@ import {
   formatSuggestions,
   parseIssueContent,
   buildIssueUrl,
+  callLLM,
   type RepairSuggestion,
   type SuggestResult,
   type LLMConfig,
@@ -217,5 +218,29 @@ describe("buildIssueUrl", () => {
       body: "Check `code` here",
     });
     expect(url).toContain("%26"); // & encoded
+  });
+});
+
+describe("callLLM timeout", () => {
+  it("should use AbortController with signal", async () => {
+    // Verify that callLLM passes signal to fetch
+    let fetchOptions: any = {};
+    const originalFetch = global.fetch;
+    global.fetch = ((url: string, opts: any) => {
+      fetchOptions = opts;
+      // Return a successful response
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: "test" } }] })));
+    }) as any;
+    
+    try {
+      await callLLM(
+        { baseUrl: "https://api.test.com/v1", apiKey: "sk-test", modelId: "test" },
+        "system",
+        "user",
+      );
+      expect(fetchOptions.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

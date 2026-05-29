@@ -56,7 +56,7 @@ import {
 	getToolHelp,
 	getErrorGuidance,
 } from "./recorder.js";
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import type { RepairEvent } from "./recorder.js";
 import { generateSuggestions, formatSuggestions, composeIssueContent, buildIssueUrl } from "./suggest-repairs.js";
 import type { LLMConfig, PhaseCallback, IssueContent } from "./suggest-repairs.js";
@@ -691,6 +691,12 @@ This will consume LLM tokens. Continue?`,
 			// ── Phase 1: Analyze ─────────────────────────────────
 			console.error("[repair-layer] /repair-suggest: analyzing with", model.id);
 
+			// Show visible working indicator during long operation
+			if (ctx.hasUI) {
+				ctx.ui.setWorkingMessage("🔧 Analyzing repair patterns...");
+				ctx.ui.setWorkingVisible(true);
+			}
+
 			try {
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 				if (!auth.ok) {
@@ -749,13 +755,13 @@ This will consume LLM tokens. Continue?`,
 						const repo = "pi-tool-repair-layer";
 						const issueUrl = buildIssueUrl(owner, repo, issue);
 
-						// Open browser via macOS open command
-						try {
-							execSync(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 });
-						} catch {
-							// fallback: just show the URL
-							ctx.ui.notify(`Open this link:\n${issueUrl}`, "info");
-						}
+						// Open browser via macOS open command (async to avoid blocking)
+						exec(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 }, (err) => {
+							if (err) {
+								// fallback: just show the URL
+								ctx.ui.notify(`Open this link:\n${issueUrl}`, "info");
+							}
+						});
 
 						ctx.ui.notify(
 							"✅ Issue pre-filled in your browser. Review and click 'Submit new issue'.\n\n" +
@@ -779,6 +785,8 @@ This will consume LLM tokens. Continue?`,
 				}
 			} finally {
 				if (ctx.hasUI) {
+					ctx.ui.setWorkingMessage(); // Clear working message
+					ctx.ui.setWorkingVisible(false); // Hide working indicator
 					ctx.ui.setStatus("repair-suggest", undefined);
 				}
 			}

@@ -355,25 +355,32 @@ export async function callLLM(
   config: LLMConfig,
   systemPrompt: string,
   userPrompt: string,
+  timeoutMs?: number,
 ): Promise<string> {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.modelId,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.3, // Low temp for structured output
-      max_tokens: 8192,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = timeoutMs ?? 120_000; // 2 minutes default
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.modelId,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3, // Low temp for structured output
+        max_tokens: 8192,
+      }),
+      signal: controller.signal,
+    });
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "unknown");
@@ -382,13 +389,21 @@ export async function callLLM(
     );
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("LLM response missing content");
-  }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("LLM response missing content");
+    }
 
-  return content;
+    return content;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`LLM API timeout after ${timeout / 1000}s. The API took too long to respond.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
