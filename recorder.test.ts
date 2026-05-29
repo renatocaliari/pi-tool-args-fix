@@ -22,6 +22,8 @@ import {
   formatSessionStats,
   formatGlobalStats,
   formatBlindspots,
+  ConsecutiveFailureTracker,
+  getToolHelp,
 } from "./recorder.js";
 
 const TEST_LOG_DIR = path.join(".pi", "repair-log-test");
@@ -626,10 +628,132 @@ describe("classifyErrorType", () => {
 
   it("returns null for unrecognized errors", () => {
     expect(classifyErrorType("something completely different")).toBeNull();
+    expect(classifyErrorType("\nCommand exited with code 1")).toBeNull();
+  });
+
+  it("returns EDIT_MISMATCH for edit text mismatch errors", () => {
+    expect(classifyErrorType("Could not find the exact text")).toBe("EDIT_MISMATCH");
+    expect(classifyErrorType("oldText does not match")).toBe("EDIT_MISMATCH");
   });
 
   it("picks the first matching category when multiple match", () => {
     // EISDIR check comes first in classifyErrorType, so it wins
     expect(classifyErrorType("EISDIR: no such file or directory")).toBe("EISDIR");
+  });
+
+  it("classifies SCHEMA_VALIDATION for validation failures", () => {
+    expect(classifyErrorType("Validation failed for tool \"ask_user_question\":\n  - questions.1.header: must not have more than 16 characters")).toBe("SCHEMA_VALIDATION");
+    expect(classifyErrorType("must not have more than 100 items")).toBe("SCHEMA_VALIDATION");
+    expect(classifyErrorType("must be one of: [\"read\", \"write\"]")).toBe("SCHEMA_VALIDATION");
+    expect(classifyErrorType("must match pattern \"^[a-z]+$\"")).toBe("SCHEMA_VALIDATION");
+  });
+
+  it("does not classify non-schema errors as SCHEMA_VALIDATION", () => {
+    expect(classifyErrorType("no such file: package.json")).not.toBe("SCHEMA_VALIDATION");
+    expect(classifyErrorType("timeout: operation timed out")).not.toBe("SCHEMA_VALIDATION");
+  });
+});
+
+// ─── ConsecutiveFailureTracker ───────────────────────────────────────
+
+describe("ConsecutiveFailureTracker", () => {
+  it("starts at 1 for first failure", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    const count = tracker.recordFailure("bash", ["command"]);
+    expect(count).toBe(1);
+  });
+
+  it("increments on repeated failures with same arg keys", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(1);
+    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(2);
+    expect(tracker.recordFailure("edit", ["edits", "path"])).toBe(3);
+    expect(tracker.isInLoop("edit")).toBe(true);
+  });
+
+  it("resets count when arg keys change", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    expect(tracker.recordFailure("bash", ["command"])).toBe(1);
+    expect(tracker.recordFailure("bash", ["command"])).toBe(2);
+    // Different arg keys → new attempt, reset to 1
+    expect(tracker.recordFailure("bash", ["command", "timeout"])).toBe(1);
+  });
+
+  it("resets count on recordSuccess", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordSuccess("bash");
+    expect(tracker.isInLoop("bash")).toBe(false);
+    expect(tracker.getCount("bash")).toBe(0);
+  });
+
+  it("tracks separate tools independently", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    expect(tracker.recordFailure("bash", ["command"])).toBe(1);
+    expect(tracker.recordFailure("edit", ["edits"])).toBe(1);
+    expect(tracker.recordFailure("bash", ["command"])).toBe(2);
+    expect(tracker.recordFailure("edit", ["edits"])).toBe(2);
+  });
+
+  it("isInLoop returns false before threshold", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    expect(tracker.isInLoop("bash")).toBe(false);
+  });
+
+  it("isInLoop returns true at threshold (3)", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    expect(tracker.isInLoop("bash")).toBe(true);
+  });
+
+  it("reset clears all state", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    tracker.recordFailure("bash", ["command"]);
+    expect(tracker.isInLoop("bash")).toBe(true);
+    tracker.reset();
+    expect(tracker.isInLoop("bash")).toBe(false);
+    expect(tracker.getCount("bash")).toBe(0);
+  });
+});
+
+// ─── getToolHelp ─────────────────────────────────────────────────────
+
+describe("getToolHelp", () => {
+  it("returns bash guidance", () => {
+    const help = getToolHelp("bash");
+    expect(help).toContain("bash");
+    expect(help).toContain("Exit code");
+    expect(help).toContain("--help");
+  });
+
+  it("returns grep guidance with exit code semantics", () => {
+    const help = getToolHelp("grep");
+    expect(help).toContain("grep");
+    expect(help).toContain("Exit code 1");
+    expect(help).toContain("grep -i");
+  });
+
+  it("returns find guidance", () => {
+    const help = getToolHelp("find");
+    expect(help).toContain("find");
+    expect(help).toContain("Exit code 1");
+  });
+
+  it("returns ls guidance", () => {
+    const help = getToolHelp("ls");
+    expect(help).toContain("ls");
+    expect(help).toContain("Exit code 1");
+  });
+
+  it("returns common guidance for unknown tools", () => {
+    const help = getToolHelp("unknown-tool");
+    expect(help).toContain("Consider checking");
   });
 });

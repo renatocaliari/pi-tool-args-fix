@@ -91,6 +91,9 @@ export interface Blindspot {
 /**
  * Classify a tool result error message into a canonical error type.
  * Used for blindspot detection and error aggregation.
+ *
+ * This is a pure pattern-matching function — it NEVER looks at toolName.
+ * That keeps it generic: any tool's error text is classified identically.
  */
 export function classifyErrorType(errorText: string | null): string | null {
 	if (!errorText) return null;
@@ -101,6 +104,10 @@ export function classifyErrorType(errorText: string | null): string | null {
 	if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
 	if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
 	if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
+	// Edit text mismatch — model tried to replace text that doesn't match exactly
+	if (lower.includes("could not find the exact text") || lower.includes("oldtext does not match")) return "EDIT_MISMATCH";
+	// Schema validation errors — model sent arguments that violate the tool's JSON schema
+	if (lower.includes("validation failed") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
 	// HTTP status codes in error text
 	const httpMatch = lower.match(/\b([45]\d{2})\b/);
 	if (httpMatch) return `HTTP_${httpMatch[1]}`;
@@ -304,6 +311,7 @@ const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
   ENOENT: "Consider fuzzy path matching: retry with relative path, check common parent dirs.",
   timeout: "Add auto-timeout extension for known long-running tools (build, test, lint).",
   "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
+  SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
   model_null_field: "Add null-stripping in tool_call handler (already done for some fields — expand coverage to all optional fields).",
   model_domain_list: "Add comma/space-split to array repair (already done for some fields — verify field name coverage).",
   model_bare_array: "Add bare-string → array wrapping for this field (check ARRAY_FIELD_NAMES coverage).",
@@ -572,6 +580,135 @@ export function formatBlindspots(spots: Blindspot[]): string {
 
   lines.push(`Total: ${spots.length} blindspot(s) detected.`);
   return lines.join("\n");
+}
+
+// ─── Consecutive Failure Tracker ──────────────────────────────────────────
+
+/**
+ * Track consecutive failures per tool for loop detection.
+ *
+ * Pure in-memory tracker. The tracker detects when an LLM agent calls the
+ * same tool repeatedly and each call fails — a common failure mode where
+ * the model enters an unproductive retry loop.
+ *
+ * Threshold: after CONSECUTIVE_LIMIT (3) identical failures, the event is
+ * marked as `CONSECUTIVE_LOOP` and further guidance can be injected.
+ */
+const CONSECUTIVE_LIMIT = 3;
+
+/** Fingerprint for one tool call attempt. */
+export interface ToolCallFingerprint {
+  toolName: string;
+  /** Canonical arg keys sorted — e.g. ["path"] vs ["content", "edits", "path"] */
+  argKeys: string[];
+}
+
+/** Track consecutive failures per tool. Thread-safe (single-threaded Node). */
+export class ConsecutiveFailureTracker {
+  /** toolName → current consecutive failure count */
+  private counts = new Map<string, number>();
+  /** toolName → last fingerprint (reset on change of arg pattern) */
+  private lastFingerprint = new Map<string, string>();
+
+  /**
+   * Record a failure. Returns the consecutive count for this tool.
+   * Count resets to 1 if:
+   *   - A different tool is called
+   *   - The arg pattern changes significantly (different keys)
+   *   - The previous call succeeded
+   */
+  recordFailure(toolName: string, inputKeys: string[]): number {
+    const fp = inputKeys.sort().join(",");
+    const prevFp = this.lastFingerprint.get(toolName);
+
+    if (prevFp !== undefined && prevFp !== fp) {
+      // Arg pattern changed — this is a new attempt, not a retry
+      this.counts.set(toolName, 1);
+    } else {
+      const current = this.counts.get(toolName) ?? 0;
+      this.counts.set(toolName, current + 1);
+    }
+
+    this.lastFingerprint.set(toolName, fp);
+    return this.counts.get(toolName)!;
+  }
+
+  /**
+   * Record a success — resets the count for this tool.
+   */
+  recordSuccess(toolName: string): void {
+    this.counts.set(toolName, 0);
+  }
+
+  /** Get the current consecutive count for a tool (0 if none). */
+  getCount(toolName: string): number {
+    return this.counts.get(toolName) ?? 0;
+  }
+
+  /**
+   * Check if this tool is in a consecutive failure loop.
+   */
+  isInLoop(toolName: string): boolean {
+    return (this.counts.get(toolName) ?? 0) >= CONSECUTIVE_LIMIT;
+  }
+
+  /** Reset all state (e.g. at session start). */
+  reset(): void {
+    this.counts.clear();
+    this.lastFingerprint.clear();
+  }
+}
+
+// ─── CLI Help Text ───────────────────────────────────────────────────────────
+
+/**
+ * Return contextual guidance text for a native CLI tool.
+ * Used when a CLI tool fails consecutively — instead of showing a bare
+ * error, the model gets structured guidance on how to use the tool.
+ */
+export function getToolHelp(toolName: string, failedCommand?: string): string {
+  const common = "Consider checking the command syntax, file paths, and permissions.";
+
+  switch (toolName) {
+    case "bash":
+      return (
+        `The bash tool runs shell commands. It exited with a non-zero status.` +
+        (failedCommand
+          ? ` The failed command was: ${failedCommand.slice(0, 100)}`
+          : "") +
+        ` Possible causes:\n` +
+        `  - Command not found or typo in command name\n` +
+        `  - File or directory not found\n` +
+        `  - Permission denied (not executable / restricted path)\n` +
+        `  - Invalid arguments to the command\n` +
+        `  - Exit code 1 is normal for grep (no matches), find (empty), diff (difference)\n` +
+        `To debug, try: running the command with simpler arguments, checking file paths, or using 'command --help'`
+      );
+    case "grep":
+      return (
+        `The grep tool searches for patterns in files.` +
+        `\n  - Exit code 0: match(es) found` +
+        `\n  - Exit code 1: no matches found (this is NORMAL, not an error)` +
+        `\n  - Exit code 2: error (e.g. file not found, invalid pattern)` +
+        `\nTip: If the pattern wasn't found, try a broader pattern, check the file path, or use grep -i for case-insensitive search.`
+      );
+    case "find":
+      return (
+        `The find tool searches for files/directories matching criteria.` +
+        `\n  - Exit code 0: results found (or no criteria matched)` +
+        `\n  - Exit code 1: no files matched (this is NORMAL)` +
+        `\nTip: If nothing was found, try broadening the search path or using less restrictive filters.`
+      );
+    case "ls":
+      return (
+        `The ls tool lists directory contents.` +
+        `\n  - Exit code 0: success` +
+        `\n  - Exit code 1: minor issue (e.g. no match with glob pattern — NORMAL)` +
+        `\nTip: Check the directory path exists and you have read permission.`
+      );
+    default:
+      return common;
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

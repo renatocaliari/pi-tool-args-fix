@@ -60,6 +60,8 @@ import {
 	formatSessionStats,
 	formatGlobalStats,
 	formatBlindspots,
+	ConsecutiveFailureTracker,
+	getToolHelp,
 } from "./recorder.js";
 
 
@@ -238,6 +240,7 @@ function repairObjectFieldsWithTrace(
 
 export default function (pi: ExtensionAPI) {
 	const stats = createStats();
+	const failureTracker = new ConsecutiveFailureTracker();
 	let eventSeq = 0;
 
 	// Prune old session logs at startup
@@ -260,6 +263,7 @@ export default function (pi: ExtensionAPI) {
 			"ctx_fetch_and_index", "ctx_batch_execute",
 			"ctx_index", "ctx_search",
 			"run_experiment", "log_experiment",
+			"grep", "find", "ls",
 		]);
 
 		if (!repairableTools.has(event.toolName)) return undefined;
@@ -355,12 +359,105 @@ export default function (pi: ExtensionAPI) {
 		// ── Phase 1: Extract error info ──────────────────────────────
 		let executionErrorType: string | null = null;
 		let blindspotCategory: string | null = null;
-		const hasError = event.isError ?? false;
+		let hasError = event.isError ?? false;
 
 		if (hasError) {
 			const errorText = extractTextContent(event.content);
 			executionErrorType = classifyErrorType(errorText);
 			blindspotCategory = executionErrorType;
+
+			// ── Native CLI false positives filter ──
+			// Pi built-in CLI tools (bash, grep, find, ls) use shell exit codes.
+			// Exit code 1 is conventional for "no results" (grep no match,
+			// find empty, diff with difference, test false), NOT a runtime error.
+			// Only flag as error when classifyErrorType found something concrete
+			// (ENOENT, EACCES, EISDIR, timeout, HTTP_*, etc.).
+			//
+			// Extension tools (agent_browser, ctx_execute, web_search, etc.) are
+			// NOT included — their error semantics differ per extension.
+			const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
+			if (NATIVE_CLI_TOOLS.has(event.toolName) && executionErrorType === null) {
+				hasError = false;
+				executionErrorType = null;
+				blindspotCategory = null;
+			}
+
+			// ── Generic safety net ──
+			// If any tool (native or extension) reports error with no concrete
+			// error text, it's not meaningful to flag as a runtime error.
+			// The model may be getting a bare exit code or a non-standard response.
+			if (hasError && executionErrorType === null && !errorText) {
+				hasError = false;
+				blindspotCategory = null;
+			}
+		}
+
+		// ── Phase 1.b: Track consecutive failures (loop detection) ──
+		const inputKeys = Object.keys(event.input ?? {});
+		if (hasError) {
+			const consecutiveCount = failureTracker.recordFailure(event.toolName, inputKeys);
+
+			// Mark as loop if ≥3 consecutive failures
+			if (consecutiveCount >= 3) {
+				blindspotCategory = "CONSECUTIVE_LOOP";
+			}
+
+			// For native CLI tools on 2nd+ failure, inject guidance via result content
+			// (same pattern as EISDIR directory fallback — proven safe)
+			const CLI_GUIDANCE_TOOLS = new Set(["bash", "grep", "find", "ls"]);
+			if (
+				consecutiveCount >= 2 &&
+				CLI_GUIDANCE_TOOLS.has(event.toolName)
+			) {
+				const currentText = extractTextContent(event.content) ?? "";
+				const helpText = getToolHelp(event.toolName);
+				console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
+
+				// Record event before returning
+				eventSeq++;
+				const resSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+				recordEvent({
+					ts: new Date().toISOString(),
+					eventType: "tool_result",
+					sessionId: resSessionId,
+					turnIndex: eventSeq,
+					toolName: event.toolName,
+					provider: ctx.model?.provider ?? "unknown",
+					model: ctx.model?.id ?? "unknown",
+					repairs: [],
+					wasRepaired: false,
+					executionFailed: true,
+					executionErrorType,
+					wasHandled: true,
+					handleType: "cli_guidance",
+					blindspotCategory: null,
+					inputKeys,
+					inputNullKeys: [],
+					inputExtraProps: [],
+				});
+
+				// Override event content to include help text
+				return {
+					content: [{
+						type: "text" as const,
+						text: `${currentText}\n\n── Tool guidance ──\n${helpText}`
+					}],
+					isError: true,
+				};
+			}
+		} else {
+			// Success: reset the counter for this tool
+			failureTracker.recordSuccess(event.toolName);
+		}
+
+		// ── Phase 1.c: Empty result detection ──
+		// If a non-error result has no meaningful output, it could trigger silent loops
+		if (!hasError && blindspotCategory === null) {
+			const resText = extractTextContent(event.content);
+			if (resText && (resText.trim() === "" || resText.trim() === "(no output)")) {
+				// Log as EMPTY_RESULT blindspot for analytics only — don't change behavior
+				blindspotCategory = "EMPTY_RESULT";
+			}
 		}
 
 		// ── Phase 2: Handle directory fallback (read tool EISDIR) ───
