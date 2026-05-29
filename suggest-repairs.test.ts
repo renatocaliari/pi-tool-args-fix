@@ -121,6 +121,12 @@ describe("formatSuggestions", () => {
       topErrorTypes: [{ type: "ENOENT", count: 5 }, { type: "timeout", count: 3 }],
       topRepairTypes: [{ type: "parsed JSON", count: 12 }],
     },
+    recommendation: {
+      assessment: "Two suggestions worth implementing, one deferred.",
+      recommendedActions: [
+        { suggestionIndex: 1, action: "implement", reason: "High impact, low risk" },
+      ],
+    },
     suggestions: [
       {
         title: "Fuzzy path matching",

@@ -18,6 +18,12 @@ import { readAllEvents, computeBlindspots, aggregateStats, type Blindspot, type 
 /** Duration/cost estimate for a suggestion. */
 export type EffortLevel = "trivial" | "small" | "medium" | "large";
 
+/**
+ * Progress callback for phase reporting.
+ * The handler uses this to update ctx.ui.setStatus at each phase.
+ */
+export type PhaseCallback = (phase: string, message: string) => void;
+
 /** A single suggested repair or enhancement. */
 export interface RepairSuggestion {
   /** Short descriptive title (e.g. "Fuzzy path matching for ENOENT errors") */
@@ -48,6 +54,43 @@ export interface RepairSuggestion {
   researchLinks: string[];
 }
 
+/** Recommendation from the LLM about which suggestions to implement. */
+export interface Recommendation {
+  /** Overall critical assessment of the repair landscape */
+  assessment: string;
+  /** Per-suggestion actions with reasons */
+  recommendedActions: {
+    /** 1-based index into the suggestions array */
+    suggestionIndex: number;
+    /** Whether this suggestion should be implemented now, deferred, or rejected */
+    action: "implement" | "defer" | "reject";
+    /** Why this action was chosen */
+    reason: string;
+  }[];
+}
+
+/** A concrete code change to apply to the codebase. */
+export interface CodeChange {
+  /** File path relative to project root */
+  file: string;
+  /** Description of what this change does */
+  description: string;
+  /** Exact old text to replace (unique) */
+  oldText: string;
+  /** Replacement text */
+  newText: string;
+}
+
+/** Result from the code generation call. */
+export interface CodeGenResult {
+  /** Changes to apply, in order */
+  changes: CodeChange[];
+  /** Files that need new test additions */
+  testInstructions: string;
+  /** Any risks or notes about the implementation */
+  notes: string;
+}
+
 /** Result from the suggestion engine. */
 export interface SuggestResult {
   /** When the analysis was generated */
@@ -65,6 +108,9 @@ export interface SuggestResult {
 
   /** Generated suggestions, highest priority first */
   suggestions: RepairSuggestion[];
+
+  /** Critical recommendation from the LLM (double-check analysis) */
+  recommendation: Recommendation;
 
   /** Raw LLM response (for debugging) */
   rawResponse: string;
@@ -142,8 +188,22 @@ IMPORTANT RULES:
 4. Each suggestion must include a concrete implementation plan.
 5. Research the web for known patterns in MCP/OpenAI tool-calling that could inspire new fixes.
 
+After generating suggestions, critically analyze them (double-check).
+Which should be implemented now, which deferred, which rejected?
+Consider: risk, effort, impact, side effects, existing coverage.
+
 Output ONLY valid JSON matching this schema, no other text:
 {
+  "recommendation": {
+    "assessment": "string — overall critical analysis. Which suggestions to implement now, which to defer/reject, and any implementation ordering or concerns.",
+    "recommendedActions": [
+      {
+        "suggestionIndex": 1,
+        "action": "implement|defer|reject",
+        "reason": "string — why this action for this suggestion"
+      }
+    ]
+  },
   "suggestions": [
     {
       "title": "string — short descriptive name",
@@ -413,17 +473,28 @@ export async function generateSuggestions(
   llmConfig: LLMConfig,
   logDir?: string,
   systemPromptOverride?: string,
+  onPhase?: PhaseCallback,
 ): Promise<SuggestResult> {
+  onPhase?.("gathering", "📊 Gathering repair data...");
   const { blindspots, stats, eventSample, totalEvents } = gatherAnalysisData(logDir);
+
+  onPhase?.("building-prompt", "📝 Building analysis prompt with " + blindspots.length + " blindspots...");
   const userPrompt = buildUserPrompt(blindspots, stats, eventSample);
 
+  onPhase?.("calling-llm", "🤖 Analyzing patterns with LLM (may take a minute)...");
   const rawResponse = await callLLM(
     llmConfig,
     systemPromptOverride ?? SYSTEM_PROMPT,
     userPrompt,
   );
 
+  onPhase?.("parsing", "🔍 Parsing LLM response...");
   const suggestions = parseSuggestions(rawResponse);
+
+  // Parse recommendation from raw response
+  const recommendation = parseRecommendation(rawResponse);
+
+  onPhase?.("formatting", "✨ Formatting suggestions...");
 
   // Compute summary
   const errorEntries = Object.entries(stats.byErrorType)
@@ -447,11 +518,45 @@ export async function generateSuggestions(
       topRepairTypes: repairEntries,
     },
     suggestions,
+    recommendation,
     rawResponse,
   };
 }
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
+
+/**
+ * Parse the recommendation section from the raw LLM response.
+ * Falls back to a default recommendation if parsing fails.
+ */
+export function parseRecommendation(raw: string): Recommendation {
+  const json = extractJSON(raw);
+  try {
+    const parsed = JSON.parse(json);
+    const rec = parsed.recommendation;
+    if (!rec) {
+      return {
+        assessment: "The LLM did not provide a critical assessment.",
+        recommendedActions: [],
+      };
+    }
+    return {
+      assessment: rec.assessment || "No assessment provided.",
+      recommendedActions: Array.isArray(rec.recommendedActions)
+        ? rec.recommendedActions.map((a: any) => ({
+            suggestionIndex: a.suggestionIndex ?? 0,
+            action: a.action || "defer",
+            reason: a.reason || "",
+          }))
+        : [],
+    };
+  } catch {
+    return {
+      assessment: "Could not parse LLM recommendation. Review suggestions manually.",
+      recommendedActions: [],
+    };
+  }
+}
 
 /**
  * Format suggestions as a human-readable tree for terminal/notify output.
@@ -473,6 +578,44 @@ export function formatSuggestions(result: SuggestResult): string {
     lines.push(`   Top errors: ${result.analysisSummary.topErrorTypes.map(e => `${e.type} (${e.count}x)`).join(", ")}`);
   }
   lines.push("");
+
+  // ── Critical Recommendation ──
+  if (result.recommendation.assessment) {
+    lines.push("🔎 Critical Analysis");
+    lines.push("─".repeat(50));
+    lines.push(result.recommendation.assessment);
+    lines.push("");
+
+    if (result.recommendation.recommendedActions.length > 0) {
+      const implementNow = result.recommendation.recommendedActions.filter(a => a.action === "implement");
+      const deferred = result.recommendation.recommendedActions.filter(a => a.action !== "implement");
+
+      if (implementNow.length > 0) {
+        lines.push("✅  Recommended to implement now:");
+        for (const a of implementNow) {
+          const sug = result.suggestions[a.suggestionIndex - 1];
+          lines.push(`   ${a.suggestionIndex}. ${sug?.title || "Unknown"}`);
+          lines.push(`      ${a.reason}`);
+        }
+        lines.push("");
+      }
+
+      if (deferred.length > 0) {
+        lines.push(`⏸️  Deferred/rejected:`);
+        for (const a of deferred) {
+          const sug = result.suggestions[a.suggestionIndex - 1];
+          lines.push(`   ${a.suggestionIndex}. ${sug?.title || "Unknown"} (${a.action})`);
+          lines.push(`      ${a.reason}`);
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  if (result.recommendation.recommendedActions.filter(a => a.action === "implement").length > 0) {
+    lines.push('💬 Action: reply "implement" to auto-implement the recommended repairs');
+    lines.push("");
+  }
 
   // Suggestions
   for (let i = 0; i < result.suggestions.length; i++) {
@@ -517,4 +660,83 @@ export function formatSuggestions(result: SuggestResult): string {
   lines.push(`Generated at: ${result.generatedAt}`);
 
   return lines.join("\n");
+}
+
+/**
+ * Generate concrete code changes for implementing selected suggestions.
+ * Reads the actual codebase files and asks the LLM to produce edit blocks.
+ */
+export async function generateCodeChanges(
+  config: LLMConfig,
+  suggestions: RepairSuggestion[],
+  codeFiles: { path: string; content: string }[],
+  onPhase?: PhaseCallback,
+): Promise<CodeGenResult> {
+  onPhase?.("reading-codebase", "📖 Reading codebase structure...");
+
+  // Build code context
+  const codeContext = codeFiles.map(f =>
+    `## File: ${f.path}\n\`\`\`typescript\n${f.content}\n\`\`\``
+  ).join("\n\n");
+
+  const suggestionsContext = suggestions.map((s, i) =>
+    `## Suggestion #${i + 1}: ${s.title}\nRationale: ${s.rationale}\nEffort: ${s.effort}\nAddresses: ${s.addressesCategory || "general"}\nTools: ${s.affectedTools.join(", ")}\nPlan:\n${s.implementationPlan.map(p => `  - ${p}`).join("\n")}`
+  ).join("\n\n");
+
+  const systemPrompt = `You are an expert TypeScript developer implementing repair functions for a tool-call repair layer.
+
+Generate concrete code changes to implement the requested repairs.
+
+Rules:
+1. Only output valid JSON matching the schema below, no other text.
+2. Each change must have EXACT oldText that exists in the file.
+3. Changes should be minimal and focused.
+4. Follow the existing pattern in repairs.ts: pure functions, exported, tested.
+5. Also suggest test additions for the new functions.
+
+Output ONLY valid JSON:
+{
+  "changes": [
+    {
+      "file": "repairs.ts" | "index.ts" | "repairs.test.ts",
+      "description": "What this change does",
+      "oldText": "exact existing text to replace",
+      "newText": "replacement text"
+    }
+  ],
+  "testInstructions": "What tests to add and how",
+  "notes": "Any risks or implementation notes"
+}`;
+
+  const userPrompt = `## Current Codebase\n\n${codeContext}\n\n## Suggestions to Implement\n\n${suggestionsContext}\n\nGenerate the exact code changes needed to implement the repair functions and integrate them into the pipeline.\n\nFor each change, provide the EXACT oldText that exists in the file and the exact replacement newText.`;
+
+  onPhase?.("generating-code", "⚡ Generating code changes with LLM...");
+  const raw = await callLLM(config, systemPrompt, userPrompt);
+  return parseCodeGenResult(raw);
+}
+
+export function parseCodeGenResult(raw: string): CodeGenResult {
+  const json = extractJSON(raw);
+  try {
+    const parsed = JSON.parse(json);
+    return {
+      changes: Array.isArray(parsed.changes)
+        ? parsed.changes.map((c: any) => ({
+            file: c.file || "",
+            description: c.description || "",
+            oldText: c.oldText || "",
+            newText: c.newText || "",
+          }))
+        : [],
+      testInstructions: parsed.testInstructions || "",
+      notes: parsed.notes || "",
+    };
+  } catch (err) {
+    console.error("[suggest-repairs] Failed to parse code generation:", err);
+    return {
+      changes: [],
+      testInstructions: `Parse error: ${err}`,
+      notes: "LLM returned unparseable JSON for code generation.",
+    };
+  }
 }

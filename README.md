@@ -247,6 +247,42 @@ coerced number            1    3%
 Total                    31
 ```
 
+### Example: /repair-suggest Workflow
+
+```
+> /repair-suggest
+
+⚡ Confirm: Analyze repair gaps?
+   Using commandcode/deepseek-v4-flash
+   1526 events, 8 blindspots, 37 errors
+   This will consume LLM tokens. Continue?
+
+✓ (confirm)
+
+Gathering event data → Building prompt → Analyzing with LLM...
+(progress feedback via setStatus at each phase)
+
+💡 Repair Suggestions (LLM-generated)
+...
+
+🔎 Critical Analysis
+...
+✅ Recommendation: implement #1, #2 | defer #3
+
+✓ Save report to ~/.pi/repair-suggestions/suggest-2026-05-29.md
+
+⚡ Confirm: Generate code patches?
+   Recommended to implement 2 suggestion(s) now.
+   Patches saved to ~/.pi/repair-suggestions/patches/ for review.
+   Proceed?
+
+✓ (confirm)
+
+Reading codebase → generating code → patches saved.
+```
+
+Patches are saved to `~/.pi/repair-suggestions/patches/` for manual review — never auto-applied.
+
 ### Example: Blindspot Report
 
 ```
@@ -348,14 +384,14 @@ ORDER BY cnt DESC;
 
 ```
 pi-tool-repair-layer/
-├── index.ts                  # Extension entry: handlers + commands (~703 lines)
+├── index.ts                  # Extension entry: handlers + commands (~917 lines)
 ├── repairs.ts                # Pure repair functions (~540 lines)
 ├── recorder.ts               # Event recording + analysis + re-exports (~545 lines)
 ├── recorder/
 │   ├── classifier.ts         # Error classification + help text (~110 lines)
 │   └── tracker.ts            # Consecutive failure tracker (~70 lines)
 ├── stats.ts                  # In-memory session stats (~115 lines)
-├── suggest-repairs.ts         # LLM repair suggestion engine (~520 lines)
+├── suggest-repairs.ts         # LLM repair suggestion engine (~742 lines)
 ├── suggest-repairs.test.ts   # 12 tests for suggestion engine
 ├── *.test.ts                 # 204 tests across 6 files
 └── README.md                 # You are here
@@ -375,7 +411,7 @@ pi-tool-repair-layer/
 git clone https://github.com/renatocaliari/pi-tool-repair-layer
 cd pi-tool-repair-layer
 npm install
-npx vitest run   # 204 tests
+npx vitest run   # 204 tests across 6 files
 ```
 
 ---

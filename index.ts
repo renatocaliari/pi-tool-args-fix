@@ -57,8 +57,8 @@ import {
 	getErrorGuidance,
 } from "./recorder.js";
 import type { RepairEvent } from "./recorder.js";
-import { generateSuggestions, formatSuggestions } from "./suggest-repairs.js";
-import type { LLMConfig } from "./suggest-repairs.js";
+import { generateSuggestions, formatSuggestions, generateCodeChanges } from "./suggest-repairs.js";
+import type { LLMConfig, PhaseCallback, CodeChange } from "./suggest-repairs.js";
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
@@ -640,8 +640,47 @@ pi.on("tool_result", async (event, ctx) => {
 	});
 
 	// ─── Command: suggest new repairs via LLM analysis ───────────────
+	// ─── Helper: gather data to show in confirmation message ────
+	function getRepairOverview(): string {
+		try {
+			const allEvents = readAllEvents();
+			const blindspots = computeBlindspots(allEvents);
+			const stats = aggregateStats(allEvents);
+			return `${allEvents.length} events, ${blindspots.length} blindspots, ${stats.totalErrors} errors`;
+		} catch {
+			return "failed to read repair logs";
+		}
+	}
+
+	// ─── Helper: read codebase files for implementation ────────
+	async function readCodebaseFiles(): Promise<{ path: string; content: string }[]> {
+		// Try cwd (dev) and extension install dir
+		let baseDir = ".";
+		try {
+			const installDir = new URL('.', import.meta.url).pathname;
+			const cwdCandidate = path.resolve("repairs.ts");
+			const installCandidate = path.join(installDir, "repairs.ts");
+			for (const c of [cwdCandidate, installCandidate]) {
+				await fs.access(c);
+				baseDir = path.dirname(c);
+				break;
+			}
+		} catch {}
+		const files = ["repairs.ts", "repairs.test.ts", "index.ts"];
+		const results: { path: string; content: string }[] = [];
+		for (const file of files) {
+			const full = path.join(baseDir, file);
+			try {
+				const c = await fs.readFile(full, "utf8");
+				results.push({ path: file, content: c });
+			} catch {}
+		}
+		return results;
+	}
+
+	// ─── Command: suggest new repairs via LLM analysis ────────
 	pi.registerCommand("repair-suggest", {
-		description: "Analyze blindspots + event logs and suggest new repairs using LLM",
+		description: "Analyze blindspots + event logs, suggest new repairs, and optionally generate implementation",
 		handler: async (_args, ctx) => {
 			const model = ctx.model;
 			if (!model) {
@@ -654,18 +693,26 @@ pi.on("tool_result", async (event, ctx) => {
 				return;
 			}
 
-			// Confirm token consumption
+			// Pre-gather overview for confirm message
+			console.error("[repair-layer] /repair-suggest: pre-gathering data...");
+			const overview = getRepairOverview();
+
+			// ── Phase 0: Confirm ─────────────────────────────────
 			if (ctx.hasUI) {
 				const ok = await ctx.ui.confirm(
-					"Consume tokens?",
-					`This will call ${model.provider}/${model.id} and consume LLM tokens.\nContinue?`,
+					"Analyze repair gaps?",
+					`Using ${model.provider}/${model.id}
+${overview}
+
+This will consume LLM tokens. Continue?`,
 				);
 				if (!ok) {
 					ctx.ui.notify("Cancelled.", "info");
 					return;
 				}
-				ctx.ui.setStatus("repair-suggest", `🔍 Analyzing with ${model.id}...`);
 			}
+
+			// ── Phase 1: Analyze ─────────────────────────────────
 			console.error("[repair-layer] /repair-suggest: analyzing with", model.id);
 
 			try {
@@ -680,13 +727,123 @@ pi.on("tool_result", async (event, ctx) => {
 					modelId: model.id,
 				};
 
-				const result = await generateSuggestions(llmConfig);
+				// Phase callback for progress feedback
+				const onPhase: PhaseCallback = (phase, message) => {
+					if (ctx.hasUI) {
+						ctx.ui.setStatus("repair-suggest", message);
+					}
+					console.error(`[repair-layer] /repair-suggest: ${message}`);
+				};
+
+				const result = await generateSuggestions(llmConfig, undefined, undefined, onPhase);
 				const output = formatSuggestions(result);
 
 				if (ctx.hasUI) {
+					ctx.ui.setStatus("repair-suggest", "✅ Analysis complete");
 					ctx.ui.notify(output, "info");
 				} else {
 					console.log(output);
+				}
+
+				// ── Phase 2: Save report + ask about code generation ──
+				// Save report to .pi/repair-suggestions/
+				const reportDir = path.join(process.env.HOME || process.env.USERPROFILE || "/tmp", ".pi", "repair-suggestions");
+				await fs.mkdir(reportDir, { recursive: true }).catch(() => {});
+				const ts = new Date().toISOString().replace(/[:.]/g, "-");
+				const reportPath = path.join(reportDir, `suggest-${ts}.md`);
+				const reportContent = `# Repair Suggestions Report
+Generated: ${new Date().toISOString()}
+Model: ${model.provider}/${model.id}
+
+## Suggestions
+${result.suggestions.map((s, i) => `### ${i+1}. ${s.title}
+**Effort:** ${s.effort}
+**Rationale:** ${s.rationale}
+**Addresses:** ${s.addressesCategory || "general"}
+**Tools:** ${s.affectedTools.join(", ")}
+**Plan:** ${s.implementationPlan.join(", ")}
+**Risks:** ${s.risks}
+`).join("
+")}
+
+## Recommendation
+${result.recommendation.assessment || "No assessment provided."}
+
+${result.recommendation.recommendedActions.map(a => {
+  const sug = result.suggestions[a.suggestionIndex - 1];
+  return `- **#${a.suggestionIndex}** ${sug?.title}: ${a.action} - ${a.reason}`;
+}).join("
+")}
+
+## Getting Started
+Run \`/repair-suggest\` again to generate implementation patches.`;
+				await fs.writeFile(reportPath, reportContent, "utf8").catch(() => {});
+				console.error(`[repair-layer] Report saved to ${reportPath}`);
+
+				// ── Phase 3: Ask if user wants code patches ────────
+				const implementNow = result.recommendation.recommendedActions.filter(a => a.action === "implement");
+				if (implementNow.length > 0 && ctx.hasUI) {
+					const wantPatches = await ctx.ui.confirm(
+						"Generate code patches?",
+						`Recommended to implement ${implementNow.length} suggestion(s) now.
+
+Patches will be saved to .pi/repair-suggestions/patches/ for you to review and integrate manually.
+
+Proceed?`,
+					);
+
+					if (wantPatches) {
+						ctx.ui.setStatus("repair-suggest", "📖 Reading codebase...");
+
+						const toImplement = implementNow.map(a => result.suggestions[a.suggestionIndex - 1]).filter(Boolean);
+						const codeFiles = await readCodebaseFiles();
+
+						const codeResult = await generateCodeChanges(
+							llmConfig,
+							toImplement,
+							codeFiles,
+							onPhase,
+						);
+
+						if (codeResult.changes.length > 0) {
+							// Save patches
+							const patchesDir = path.join(reportDir, "patches");
+							await fs.mkdir(patchesDir, { recursive: true }).catch(() => {});
+							const patchContent = codeResult.changes.map(c =>
+								`## File: ${c.file}
+## Description: ${c.description}
+## Patch:
+\`\`\`diff
+--- a/${c.file}
++++ b/${c.file}
+@@ ... @@
+${c.newText.split("\n").map(l => "+" + l).join("\n")}
+\`\`\`
+`
+							).join("
+---
+");
+							const patchPath = path.join(patchesDir, `patches-${ts}.md`);
+							await fs.writeFile(patchPath, patchContent, "utf8");
+							ctx.ui.notify(
+								`✅ ${codeResult.changes.length} patch(es) saved.
+Review and apply: ${patchPath}
+
+${codeResult.testInstructions ? "\nTests needed:\n" + codeResult.testInstructions : ""}
+
+${codeResult.notes ? "\nNotes:\n" + codeResult.notes : ""}`,
+								"info",
+							);
+						} else {
+							ctx.ui.notify(`⚠️ Could not generate code patches. ${codeResult.notes}`, "error");
+						}
+					} else {
+						ctx.ui.notify("Patch generation skipped. Report saved for manual review.", "info");
+					}
+				} else if (implementNow.length === 0 && result.suggestions.length > 0) {
+					if (ctx.hasUI) {
+						ctx.ui.notify("No suggestions recommended for immediate implementation. Review the report manually.", "info");
+					}
 				}
 			} catch (err) {
 				const errMsg = `Analysis failed: ${err}`;
@@ -702,8 +859,6 @@ pi.on("tool_result", async (event, ctx) => {
 			}
 		},
 	});
-}
-
 // ─── Repair Summary Helper ────────────────────────────────────────────────
 
 function summarizeRepairs(
