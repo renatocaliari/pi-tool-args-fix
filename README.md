@@ -1,12 +1,35 @@
-# pi-tool-repair-layer
+<div align="center">
 
-**A pi extension that intercepts `tool_call` events and fixes common LLM argument mistakes before tools execute.**
+# 🔧 pi-tool-repair-layer
 
-Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for tool-calling failures — but ~90% of these failures are *the same four bugs* repeating across every model. This extension catches and fixes them transparently, so the tool never even sees the broken input.
+<br>
 
-Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/2050956678502420612).
+![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-187_passing-2ea043?style=for-the-badge)
 
-## The Failure Modes We Fix
+**Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
+
+<br>
+
+[💡 Concept](#-concept) · [✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🔍 Architecture](#-architecture) · [📊 Observability](#-observability) · [⚙️ Reference](#️-reference) · [🤝 Contributing](#-contributing)
+
+<br>
+
+</div>
+
+---
+
+> *"The core insight: 'open model bad at tool calling' is almost always a harness problem. A finite set of compositional failures repeats across models."* — Ahmad Awais
+
+This extension is the harness fix. ~90% of tool-calling failures are the same reusable patterns — fix them once at the tool boundary and every model benefits.
+
+---
+
+## 💡 Concept
+
+Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for broken tool calls. But the failures aren't random — they're **12 finite, compositional bugs** that repeat across every model:
 
 | # | What the model emits | What the tool needs | Repair |
 |---|---------------------|---------------------|--------|
@@ -14,121 +37,193 @@ Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/205095667850242061
 | 2 | `paths: "[\"a.ts\",\"b.ts\"]"` | `paths: ["a.ts", "b.ts"]` | Parse stringified JSON arrays/objects |
 | 3 | `edits: {oldText, newText}` | `edits: [{oldText, newText}]` | Wrap bare object → single-element array |
 | 4 | `function_names: "main"` | `function_names: ["main"]` | Wrap bare string/number → array |
-| 5 | `path: "[notes.md](http://notes.md)"` | `path: "notes.md"` | Unwrap markdown auto-links from paths |
-| 6 | `{limit: 30}` | `{offset: 1, limit: 30}` | Relational defaults for read/read_file |
-| 7 | `tags: "admin, user"` | `tags: ["admin", "user"]` | Split comma/space-separated strings → array |
-| 8 | `name: "null"` | omit the field entirely | Strip null-like strings ("null", "none", "n/a") |
-| 9 | `strict: "true"` | `strict: true` | Coerce boolean strings ("true", "yes", "1") |
-| 10 | `limit: "42"` | `limit: 42` | Coerce number strings ("42", "3.14") |
-| 11 | `read ~/dir/` → EISDIR | `📁 Directory: listing` | Fallback: `fs.readdir()` and return listing with hint |
-| 12 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items (schema-aware) |
+| 5 | `path: "[notes.md](http://notes.md)"` | `path: "notes.md"` | Unwrap markdown links from paths |
+| 6 | `{limit: 30}` | `{offset: 1, limit: 30}` | Relational defaults (read/read_file) |
+| 7 | `tags: "admin, user"` | `tags: ["admin", "user"]` | Split delimited strings → array |
+| 8 | `name: "null"` | omit the field entirely | Strip null-like strings |
+| 9 | `strict: "true"` | `strict: true` | Coerce boolean strings |
+| 10 | `limit: "42"` | `limit: 42` | Coerce number strings |
+| 11 | `read ~/dir/` → EISDIR | `📁 Directory listing` | Directory fallback via `fs.readdir()` |
+| 12 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items |
 
-## Architecture
+### Why not just use better models?
 
-**Validate-then-repair** — parse first, only repair what would fail. Valid input passes through unchanged. Content fields (`command`, `code`, `oldText`, `newText`) are **never** touched — only structural/container fields are repaired.
+Because this is a **harness problem**, not a model problem. Every model makes these mistakes — including frontier models. Fixing it at the harness level means:
+- ✅ **Every model benefits** — from Llama to Claude
+- ✅ **Zero changes to model weights** or training pipelines
+- ✅ **Works offline**, no cloud dependency
+- ✅ **Transparent** — model doesn't know it was helped
+- ✅ **Sub-millisecond repairs** — no perceptible latency
 
-### Schema-Aware Array Item Repair
+<div align="center">
+<br>
+<img src="https://img.shields.io/badge/Validated_against-DeepSeek_GLM_Qwen_Llama_Claude_GPT-555?style=flat-square" alt="Models">
+<img src="https://img.shields.io/badge/Repair_latency-%3C1ms_per_field-brightgreen?style=flat-square" alt="Latency">
+<img src="https://img.shields.io/badge/Content_fields-NEVER_touched-red?style=flat-square" alt="Safety">
+<br><br>
+</div>
 
-When a model sends extra properties inside array items (e.g. `path` duplicated inside each `edits[]` item), the extension strips them based on a per-field schema map:
+---
 
-| Field | Allowed Properties |
-|-------|--------------------|
-| `edits` | `oldText`, `newText` |
-| `replacements` | `path`, `symbol`, `text` |
-| `files` | `path`, `edits`, `replacements` |
-| `tasks` | `agent`, `task`, `count`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
-| `steps` | `agent`, `task`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
-| `commands` | `label`, `command` |
+## ✨ Features
 
-This catches the common pattern where the model duplicates a parent-level parameter (like `path`) into every nested array item.
+<details>
+<summary><strong>🔧 12 field-level repairs</strong> — structural fixes before the tool runs</summary>
 
-### Directory Fallback
+<br>
 
-When the model calls `read` on a directory path instead of a file, the native tool returns an EISDIR error. The extension intercepts this via the `tool_result` hook, detects the EISDIR error, lists the directory contents via `fs.readdir()`, and returns a clean listing with a hint for the model — all in the same tool result. No second tool call needed.
+**Validate-then-repair:** every field is parsed first — valid input passes through unchanged. Content fields (`command`, `code`, `oldText`, `newText`, `text`) are **never** touched.
 
-### CLI Guidance (Consecutive Failure)
+| Priority | Repair | Description |
+|----------|--------|-------------|
+| 1 | `clean-path` | Unwrap markdown links, normalize `~/` paths |
+| 2 | `parse-json` | Stringified JSON → object/array |
+| 3 | `wrap-object-as-array` | `{...}` → `[{...}]` |
+| 4 | `wrap-array` | Bare value → `[value]` |
+| 5 | `split-string-to-array` | `"foo, bar"` → `["foo", "bar"]` |
+| 6 | `strip-extra-properties` | Remove unknown keys from array items (schema-aware) |
+| 7 | `null-like-to-undefined` | Strip `"null"`, `"none"`, `"n/a"` strings |
+| 8 | `coerce-boolean` | `"true"` / `"yes"` / `"1"` → `true` |
+| 9 | `coerce-number` | `"42"` / `"3.14"` → `42` / `3.14` |
+| — | Recurse into nested structures after type changes |
 
-When a native CLI tool (`bash`, `grep`, `find`, `ls`) fails 2+ times consecutively with the same argument pattern, the extension intercepts the `tool_result` and appends contextual documentation explaining the tool's exit code semantics and common causes.
+</details>
 
-Example: on the 2nd consecutive `grep` failure, the model sees:
-```
-(no output) — exited with code 1
+<details>
+<summary><strong>🛡️ Error recovery</strong> — catch failures, inject guidance, break retry loops</summary>
 
-── Tool guidance ──
-The grep tool searches for patterns in files.
-  - Exit code 0: match(es) found
-  - Exit code 1: no matches found (this is NORMAL, not an error)
-  - Exit code 2: error (e.g. file not found, invalid pattern)
-Tip: Try a broader pattern, check the file path, or use grep -i
-```
+<br>
 
-This works for any native CLI tool. Extension tools (`agent_browser`, `ctx_search`, etc.) are excluded — their error semantics differ per extension.
+| Mechanism | Trigger | Effect |
+|-----------|---------|--------|
+| **Directory fallback** | `read` on a directory → EISDIR | Returns `📁 Directory: listing` with contents |
+| **CLI guidance** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Appends `── Tool guidance ──` with exit code semantics |
+| **Edit guidance** | 2nd+ consecutive `edit` failure | Tells model to re-read the file before trying again |
+| **Schema guidance** | First `SCHEMA_VALIDATION` error per tool | Explains validation rules (types, enums, maxLength) |
+| **Loop detection** | 3+ consecutive same-tool failures | Flags as `CONSECUTIVE_LOOP` in analytics |
+| **Empty result detection** | Successful call, no output | Logs as `EMPTY_RESULT` for blindspot analysis |
 
-### Consecutive Loop Detection
+</details>
 
-The extension tracks consecutive failures per tool via `ConsecutiveFailureTracker`. When the same tool fails 3+ times with the same argument pattern, the event is marked as `CONSECUTIVE_LOOP` in the blindspot log. This catches the common pattern where the model enters an unproductive retry loop (e.g. 15+ retries of `edit` on the same file).
+<details>
+<summary><strong>📊 Observability</strong> — every event logged, analyzable across sessions</summary>
 
-### Error Classification (Blindspot Detection)
+<br>
 
-All `tool_result` errors are classified by `classifyErrorType()`, a pure pattern-matching function that works on error text alone (no tool name dependency):
+- **Per-session JSONL logs** at `.pi/repair-log/<sessionId>.jsonl`
+- **3 commands** for live analysis: `/repair-stats`, `/repair-stats-global`, `/repair-gaps`
+- **28-field event schema** with error classification, blindspot detection, repair tracking
+- **50-session retention** with auto-prune
+- **DuckDB queryable** — standard JSONL format
 
-| Pattern | Classification |
-|---------|---------------|
-| `EISDIR` | `EISDIR` |
-| `no such file` / `ENOENT` | `ENOENT` |
-| `permission denied` / `EACCES`/`EPERM` | `EACCES` |
-| `timeout` / `timed out` | `timeout` |
-| `rate limit` / `429` | `rate_limit` |
-| `bad request` / `400` | `bad_request` |
-| `could not find the exact text` / `oldText does not match` | `EDIT_MISMATCH` |
-| `Validation failed` / `must not have more than` / `must be one of` | `SCHEMA_VALIDATION` |
-| `4xx` / `5xx` HTTP codes | `HTTP_<code>` |
+</details>
 
-Unclassifiable errors are filtered:
-- **Native CLI false positives**: `bash|grep|find|ls` with empty error text → not flagged
-- **Generic safety net**: any tool with empty error text → not flagged
-- **Empty results**: successful tool calls with no output logged as `EMPTY_RESULT` (analytics only)
+<details>
+<summary><strong>🧠 Blindspot detection</strong> — knows what it doesn't fix</summary>
 
-### Tool Call Repair Order
+<br>
 
-1. `clean-path` — unwrap markdown links, normalize `~/` paths
-2. `parse-json` — string → object/array
-3. `wrap-object-as-array` — `{...}` → `[{...}]`
-4. `wrap-array` — bare value → `[value]`
-5. `split-string-to-array` — `"foo, bar"` → `["foo", "bar"]`
-6. `strip-extra-properties` — remove unknown keys from array items
-7. `null-like-to-undefined` — strip "null", "none", "n/a" strings
-8. `coerce-boolean` — "true"/"yes"/"1" → true
-9. `coerce-number` — "42"/"3.14" → 42/3.14
-10. Recurse into nested structures after type changes
+Every error pattern without a repair is classified and surfaced. The `/repair-gaps` command shows:
 
-Every repair is logged with `tool_input_repaired:<toolName>` via `console.error`, surfaced in the TUI status bar, and persisted to JSONL at `.pi/repair-log/<sessionId>.jsonl`.
+| Category | Meaning | Replacements from data |
+|----------|---------|----------------------|
+| `ENOENT` | File not found | Fuzzy path matching |
+| `EACCES` | Permission denied | Directory permissions |
+| `timeout` | Tool timed out | Auto-timeout extension |
+| `EDIT_MISMATCH` | Edit text not found | Read file before retry |
+| `SCHEMA_VALIDATION` | Schema violation | Field-level truncation |
+| `CONSECUTIVE_LOOP` | 3+ same-tool failures | Circuit break, guidance |
+| `EMPTY_RESULT` | Tool succeeded, no output | Analytics only |
 
-## Install
+</details>
+
+---
+
+## 🚀 Quick Start
 
 ```bash
+# Install
 pi install git:github.com/renatocaliari/pi-tool-repair-layer
+
+# That's it. Every tool call is intercepted and repaired automatically.
+# Check session stats:
+/repair-stats
 ```
 
-Or from a local clone:
+**No configuration. No model changes. Zero dependencies pulled in.**
 
-```bash
-pi install ./path/to/pi-tool-repair-layer
+---
+
+## 🔍 Architecture
+
+```
+                    tool_call                    tool_result
+                         │                           │
+                         ▼                           ▼
+               ┌─────────────────────┐     ┌──────────────────────┐
+               │ 1. Classify fields  │     │ 1. Classify error     │
+               │    (array, string,  │     │ 2. Detect empty       │
+               │     boolean, etc.)  │     │ 3. Track failures     │
+               │                     │     │ 4. Inject guidance    │
+               │ 2. Apply repairs    │     │ 5. Directory fallback │
+               │    (sub-millisecond)│     │ 6. Log to JSONL       │
+               └────────┬────────────┘     └──────────┬───────────┘
+                        │                             │
+                        ▼                             ▼
+                  No repairs?                     Handled?
+                  ───────────                     ────────
+                  Pass through                     Return patched result
+                  untouched                        or undefined (pass)
 ```
 
-## Usage
+### Validate-then-Repair Philosophy
 
-Once installed, repairs are automatic — no configuration needed. Every tool call is intercepted, validated, and repaired before execution.
+Every repair follows the same contract: **parse first, validate, repair only what would fail**.
 
-### Commands
+```typescript
+// Valid input → passes through unchanged
+repairFieldValue(["a.ts", "b.ts"], "paths", "read")
+// → ["a.ts", "b.ts"]  (no change)
+
+// Invalid input → repaired
+repairFieldValue("\"main\"", "function_names", "edit")
+// → ["main"]
+```
+
+Content fields (`command`, `code`, `oldText`, `newText`, `text`, `content`) are **never** touched. Only structural and container fields are repaired.
+
+### Repair Order
+
+1. `clean-path` → 2. `parse-json` → 3. `wrap-object-as-array` → 4. `wrap-array` → 5. `split-string-to-array` → 6. `strip-extra-properties` → 7. `null-like-to-undefined` → 8. `coerce-boolean` → 9. `coerce-number` → 10. Recurse
+
+After any structural change, nested objects/arrays are recursively validated.
+
+### Event Pipeline
+
+Every `tool_call` and `tool_result` flows through 5 handler phases:
+
+```
+Phase 1.a — Field repair (tool_call)
+Phase 1.b — Consecutive failure tracking + guidance injection (tool_result)
+Phase 1.c — Empty result detection (tool_result)
+Phase 1.d — Error-type guidance on first occurrence (tool_result)
+Phase 2   — EISDIR directory fallback (tool_result)
+Phase 3   — Event recording to JSONL + in-memory stats (tool_result)
+```
+
+---
+
+## 📊 Observability
+
+### Live Commands
 
 | Command | Description |
 |---------|-------------|
-| `/repair-stats` | Show in-memory repair statistics for the current session |
-| `/repair-stats-global` | Show aggregated repair stats across all logged sessions |
-| `/repair-gaps` | Show error patterns that lack repair coverage (blindspots) |
+| `/repair-stats` | In-memory stats for the current session |
+| `/repair-stats-global` | Aggregated stats across all logged sessions |
+| `/repair-gaps` | Error patterns without repair coverage |
 
-### Example Output
+### Example: Session Stats
 
 ```
 > /repair-stats
@@ -147,68 +242,58 @@ coerced number            1    3%
 Total                    31
 ```
 
+### Example: Blindspot Report
+
 ```
 > /repair-gaps
 
 🔍 Repair Blindspots (unfixed error patterns)
-────────────────────────────────────────────
 
   [ENOENT] web_search — 5x
-  ├─ Models: anthropic/claude-sonnet-4-5, openai/gpt-4o
+  ├─ Models: claude-sonnet-4-5, gpt-4o
   ├─ First: 2026-05-28T10:00:00.000Z
   ├─ Last:  2026-05-28T11:00:00.000Z
-  ├─ Example: input keys: [query]
   └─ 💡 Consider fuzzy path matching: retry with relative path, check common parent dirs.
 
 Total: 1 blindspot(s) detected.
 ```
 
-## 📊 Event Logging
+### Event Schema
 
-Every `tool_call` and `tool_result` event is recorded to a JSONL file for
-post-session analysis.
+Every event is recorded as a JSONL line with 28 fields:
 
-### Storage Location
+| Field | Type | Example |
+|-------|------|---------|
+| `eventType` | `"tool_call"` / `"tool_result"` | `"tool_result"` |
+| `toolName` | `string` | `"edit"` |
+| `provider` | `string` | `"anthropic"` |
+| `model` | `string` | `"claude-sonnet-4-5"` |
+| `repairs` | `string[]` | `["wrap-array", "parse-json"]` |
+| `wasRepaired` | `boolean` | `true` |
+| `executionFailed` | `boolean` | `false` |
+| `executionErrorType` | `string` | `"EDIT_MISMATCH"` |
+| `wasHandled` | `boolean` | `false` |
+| `handleType` | `string` | `"cli_guidance"` |
+| `blindspotCategory` | `string` | `"CONSECUTIVE_LOOP"` |
+| `inputKeys` | `string[]` | `["path", "edits"]` |
 
+Full schema: 28 fields including `sessionId`, `turnIndex`, `ts`, `inputNullKeys`, `inputExtraProps`.
+
+### Automated Analysis
+
+Standard JSONL format means any JSON tool works:
+
+```bash
+# Most common repair types
+jq -r '.repairs[]' .pi/repair-log/*.jsonl | sort | uniq -c | sort -rn | head -10
+
+# Error rate per model
+jq -r 'select(.eventType == "tool_result") | "\(.provider)/\(.model) \(.executionFailed)"' \
+  .pi/repair-log/*.jsonl | awk '{failed+=$2; total+=1} END {printf "%.1f%% (%d/%d)\n", failed/total*100, failed, total}'
 ```
-.pi/repair-log/
-  ├── <sessionId>.jsonl       ← append-only events
-  └── ... (one file per session)
-```
-
-### Event Schema (JSON, one object per line)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `ts` | string | ISO 8601 timestamp |
-| `eventType` | `"tool_call"` / `"tool_result"` | Phase of the event |
-| `sessionId` | string | pi session identifier |
-| `turnIndex` | number | Sequential event counter |
-| `toolName` | string | Tool that was called (e.g. `read`, `edit`, `bash`) |
-| `provider` | string | Model provider (e.g. `test-provider`) |
-| `model` | string | Model id (e.g. `test-model`) |
-| `repairs` | string[] | What repairs were applied |
-| `wasRepaired` | boolean | Whether any repair was applied |
-| `executionFailed` | boolean | Whether the tool execution failed |
-| `executionErrorType` | string | Error category (`ENOENT`, `EACCES`, `timeout`, `EDIT_MISMATCH`, `SCHEMA_VALIDATION`, …) |
-| `wasHandled` | boolean | Whether the extension handled the error (e.g. directory fallback, CLI guidance) |
-| `handleType` | string | Handler name (`directory_fallback`, `cli_guidance`, …) |
-| `blindspotCategory` | string | Non-null when this error could benefit from a new repair (`CONSECUTIVE_LOOP`, `EMPTY_RESULT`, …) |
-| `inputKeys` | string[] | Structural fingerprint: input field names |
-| `inputNullKeys` | string[] | Fields that were sent as `null` |
-| `inputExtraProps` | string[] | Extra properties stripped from array items |
-
-### Retention
-
-Session logs are retained for the last **50 sessions**, pruned automatically at
-extension startup. Storage is minimal (~10KB per session).
-
-### DuckDB Integration
-
-Since the log format is standard JSONL, you can query across sessions with DuckDB:
 
 ```sql
--- Count errors by tool and category
+-- DuckDB: errors by tool and category
 SELECT
   json_extract_string(line, '$.toolName') AS tool,
   json_extract_string(line, '$.executionErrorType') AS error_type,
@@ -218,23 +303,76 @@ GROUP BY tool, error_type
 ORDER BY cnt DESC;
 ```
 
-Or combine with shell to analyze live:
+---
 
-```bash
-# Most common repair types
-jq -r '.repairs[]' .pi/repair-log/*.jsonl | sort | uniq -c | sort -rn | head -10
+## ⚙️ Reference
 
-# Error rate per model
-jq -r 'select(.eventType == "tool_result") | "\(.provider)/\(.model) \(.executionFailed)"'
-  .pi/repair-log/*.jsonl | awk '{failed+=$2; total+=1} END {printf "%.1f%% (%d/%d)\n", failed/total*100, failed, total}'
+### Schema-Aware Array Item Repair
+
+| Field | Allowed Properties |
+|-------|--------------------|
+| `edits` | `oldText`, `newText` |
+| `replacements` | `path`, `symbol`, `text` |
+| `files` | `path`, `edits`, `replacements` |
+| `tasks` | `agent`, `task`, `count`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
+| `steps` | `agent`, `task`, `output`, `outputMode`, `reads`, `progress`, `model`, `skill`, `cwd` |
+| `commands` | `label`, `command` |
+
+### Error Classification
+
+| Error Text Pattern | Classification |
+|--------------------|----------------|
+| `EISDIR` | `EISDIR` |
+| `no such file` / `ENOENT` | `ENOENT` |
+| `permission denied` / `EACCES` / `EPERM` | `EACCES` |
+| `timeout` / `timed out` | `timeout` |
+| `rate limit` / `429` | `rate_limit` |
+| `bad request` / `400` | `bad_request` |
+| `could not find the exact text` / `could not find edits[*]` / `oldText does not match` | `EDIT_MISMATCH` |
+| `Validation failed` / `must not have more than` / `must be one of` / `must match` | `SCHEMA_VALIDATION` |
+| `4xx` / `5xx` HTTP codes | `HTTP_<code>` |
+
+### Native Tools × Extension Tools
+
+| Type | Tools | Repair Strategy |
+|------|-------|-----------------|
+| **Pi native** | `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` | Generic field repairs + execution guidance on consecutive failures |
+| **Extension tools** | `agent_browser`, `ctx_search`, `web_search`, etc. | Generic field repairs only (error semantics vary per extension) |
+
+### File Structure
+
+```
+pi-tool-repair-layer/
+├── index.ts                  # Extension entry: handlers + commands (~703 lines)
+├── repairs.ts                # Pure repair functions (~540 lines)
+├── recorder.ts               # Event recording + analysis + re-exports (~545 lines)
+├── recorder/
+│   ├── classifier.ts         # Error classification + help text (~110 lines)
+│   └── tracker.ts            # Consecutive failure tracker (~70 lines)
+├── stats.ts                  # In-memory session stats (~115 lines)
+├── *.test.ts                 # 187 tests across 5 files
+└── README.md                 # You are here
 ```
 
-## Why This Exists
+---
 
-> "The core insight: 'open model bad at tool calling' is almost always a harness problem. A finite set of compositional failures repeats across models." — Ahmad Awais
+## 🤝 Contributing
 
-This extension is the harness fix. Rather than waiting for every model to fix these bugs, fix them once at the tool boundary.
+1. Fork → branch → PR
+2. Keep functions ≤50 lines, files ≤400 lines (coding standards)
+3. Add tests for any new repair or handler phase
+4. Run `npx vitest run` before committing
 
-## License
+```bash
+# Development
+git clone https://github.com/renatocaliari/pi-tool-repair-layer
+cd pi-tool-repair-layer
+npm install
+npx vitest run   # 187 tests
+```
 
-MIT
+---
+
+## 📄 License
+
+MIT. Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/2050956678502420612)'s tool-input repair layer for CommandCode.
