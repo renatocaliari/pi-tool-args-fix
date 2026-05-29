@@ -146,9 +146,11 @@ Every error pattern without a repair is classified and surfaced. The `/repair-ga
 # Install
 pi install git:github.com/renatocaliari/pi-tool-repair-layer
 
-# That's it. Every tool call is intercepted and repaired automatically.
-# Check session stats:
-/repair-stats
+# That's it — every tool call is intercepted and repaired automatically.
+# Monitor what's happening with built-in commands:
+/repair-stats          # Repairs in this session
+/repair-stats-global   # Repairs across all sessions
+/repair-gaps           # Error patterns not yet covered
 ```
 
 **No configuration. No model changes. Zero dependencies pulled in.**
