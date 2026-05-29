@@ -21,9 +21,10 @@
 
 ---
 
-> *"The core insight: 'open model bad at tool calling' is almost always a harness problem. A finite set of compositional failures repeats across models."* — Ahmad Awais
+> *"The core insight: 'open model bad at tool calling' is almost always a harness problem. A finite set of compositional failures repeats across models."*  
+> — [Ahmad Awais](https://x.com/mrahmadawais/status/2050956678502420612)
 
-This extension is the harness fix. ~90% of tool-calling failures are the same reusable patterns — fix them once at the tool boundary and every model benefits.
+This extension is the harness fix. ~90% of tool-calling failures are the same reusable patterns — fix them once at the tool boundary and every model benefits. These exact patterns were observed and fixed from production [DeepSeek V4 and Mimo 2.5](https://x.com/mrahmadawais/status/2050956678502420612) agent logs, but the repairs are field-name based — any model that emits the same structural mistakes gets the same transparent fix.
 
 ---
 
@@ -49,15 +50,15 @@ Open-weight and smaller LLMs (DeepSeek, GLM, Qwen, Llama) are notorious for brok
 ### Why not just use better models?
 
 Because this is a **harness problem**, not a model problem. Every model makes these mistakes — including frontier models. Fixing it at the harness level means:
-- ✅ **Every model benefits** — from Llama to Claude
+- ✅ **Any model that makes these mistakes benefits** — from Llama to Claude
 - ✅ **Zero changes to model weights** or training pipelines
 - ✅ **Works offline**, no cloud dependency
 - ✅ **Transparent** — model doesn't know it was helped
-- ✅ **Sub-millisecond repairs** — no perceptible latency
+- ✅ **Fast repairs** — sub-millisecond per field (pure string operations)
 
 <div align="center">
 <br>
-<img src="https://img.shields.io/badge/Validated_against-DeepSeek_GLM_Qwen_Llama_Claude_GPT-555?style=flat-square" alt="Models">
+<img src="https://img.shields.io/badge/Validated_with-DeepSeek_V4_Flash_Pro_Mimo_2.5-555?style=flat-square" alt="Models">
 <img src="https://img.shields.io/badge/Repair_latency-%3C1ms_per_field-brightgreen?style=flat-square" alt="Latency">
 <img src="https://img.shields.io/badge/Content_fields-NEVER_touched-red?style=flat-square" alt="Safety">
 <br><br>
@@ -375,4 +376,4 @@ npx vitest run   # 187 tests
 
 ## 📄 License
 
-MIT. Inspired by [@mrahmadawais](https://x.com/mrahmadawais/status/2050956678502420612)'s tool-input repair layer for CommandCode.
+MIT.
