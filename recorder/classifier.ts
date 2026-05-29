@@ -135,3 +135,28 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
       return common;
   }
 }
+
+/**
+ * Return contextual guidance text for a specific error category (not tool-specific).
+ * Used when an error type like SCHEMA_VALIDATION occurs — the model gets structured
+ * advice about what went wrong and how to fix it.
+ * Returns null for error categories that have no predefined guidance.
+ */
+export function getErrorGuidance(category: string, _toolName?: string): string | null {
+  switch (category) {
+    case "SCHEMA_VALIDATION":
+      return (
+        `The tool rejected the arguments due to a schema validation error. This is a permanent error — retrying the same arguments will not help.` +
+        `\nPossible causes:` +
+        `\n  - Required field missing from the arguments` +
+        `\n  - Field value exceeds maximum length constraints` +
+        `\n  - Invalid enum value (not in the allowed list)` +
+        `\n  - Wrong data type for a field (expected string, got number)` +
+        `\n  - Unexpected extra field not in the tool's definition` +
+        `\nTo fix: review the tool's parameter requirements and ensure every argument is valid.` +
+        `\nTip: remove any extra fields not explicitly required by the tool definition.`
+      );
+    default:
+      return null;
+  }
+}

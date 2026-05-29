@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { getSuggestion } from "./recorder/classifier.js";
 
 // Re-export from sub-modules for backward compatibility
-export { classifyErrorType, getToolHelp, getSuggestion } from "./recorder/classifier.js";
+export { classifyErrorType, getToolHelp, getErrorGuidance, getSuggestion } from "./recorder/classifier.js";
 export { ConsecutiveFailureTracker } from "./recorder/tracker.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────

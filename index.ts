@@ -54,6 +54,7 @@ import {
 	formatBlindspots,
 	ConsecutiveFailureTracker,
 	getToolHelp,
+	getErrorGuidance,
 } from "./recorder.js";
 import type { RepairEvent } from "./recorder.js";
 
@@ -61,6 +62,9 @@ import type { RepairEvent } from "./recorder.js";
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
 /** Tools that get guidance injection on consecutive failures (includes CLI + edit/read/write). */
 const GUIDANCE_TOOLS = new Set([...NATIVE_CLI_TOOLS, "edit", "read", "write"]);
+
+/** Track which (toolName:errorType) pairs have already received error-type guidance. */
+const guidedErrorPairs = new Set<string>();
 
 
 
@@ -556,6 +560,26 @@ pi.on("tool_result", async (event, ctx) => {
 	const intercept = trackAndInterceptFailures(event, err, failureTracker, ctx, eventSeq);
 	if (intercept.eventSeqDelta) eventSeq = eventSeq + intercept.eventSeqDelta;
 	if (intercept.result) return intercept.result;
+
+	// Phase 1.d: Error-type guidance (e.g. SCHEMA_VALIDATION) on first occurrence per tool+type
+	if (err.executionErrorType) {
+		const guidanceKey = `${event.toolName}:${err.executionErrorType}`;
+		if (!guidedErrorPairs.has(guidanceKey)) {
+			guidedErrorPairs.add(guidanceKey);
+			const guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
+			if (guidanceText) {
+				const currentText = extractTextContent(event.content) ?? "";
+				err.blindspotCategory = null; // being handled — no longer a blindspot
+				const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "category_guidance");
+				recordEvent(rec);
+				eventSeq++;
+				return {
+					content: [{ type: "text" as const, text: `${currentText}\n\n── Tool guidance ──\n${guidanceText}` }],
+					isError: true,
+				};
+			}
+		}
+	}
 
 	// Phase 2: EISDIR directory fallback
 	const fallback = await handleEisdirFallback(event, ctx, err, stats);

@@ -7,6 +7,7 @@ import {
   classifyErrorType,
   getSuggestion,
   getToolHelp,
+  getErrorGuidance,
 } from "./classifier.js";
 
 // ─── classifyErrorType ────────────────────────────────────────────────
@@ -161,5 +162,25 @@ describe("getToolHelp", () => {
   it("returns generic guidance for unknown tools", () => {
     const help = getToolHelp("rsync");
     expect(help).toContain("Consider checking");
+  });
+
+  describe("getErrorGuidance", () => {
+    it("returns SCHEMA_VALIDATION guidance with actionable advice", () => {
+      const g = getErrorGuidance("SCHEMA_VALIDATION");
+      expect(g).toContain("permanent error");
+      expect(g).toContain("Required field missing");
+      expect(g).toContain("enum value");
+      expect(g).toContain("argument");
+    });
+
+    it("returns null for unknown categories", () => {
+      expect(getErrorGuidance("ENOENT")).toBeNull();
+      expect(getErrorGuidance("EACCES")).toBeNull();
+      expect(getErrorGuidance("nonsense_category")).toBeNull();
+    });
+
+    it("returns null for empty string", () => {
+      expect(getErrorGuidance("")).toBeNull();
+    });
   });
 });
