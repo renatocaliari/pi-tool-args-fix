@@ -243,6 +243,38 @@ function repairObjectFieldsWithTrace(
 
 // ─── Main Extension ───────────────────────────────────────────────────────
 
+/** Helper: show progress widget above editor */
+function showProgress(ctx: any, lines: string[]): void {
+	if (ctx.hasUI) {
+		ctx.ui.setWidget("repair-progress", lines);
+	}
+}
+
+/** Helper: clear progress widget */
+function clearProgress(ctx: any): void {
+	if (ctx.hasUI) {
+		ctx.ui.setWidget("repair-progress", undefined);
+	}
+}
+
+/** Helper: show error notification */
+function showError(ctx: any, msg: string): void {
+	if (ctx.hasUI) {
+		ctx.ui.notify(msg, "error");
+	} else {
+		console.error("[repair-layer]", msg);
+	}
+}
+
+/** Helper: show info notification */
+function showInfo(ctx: any, msg: string): void {
+	if (ctx.hasUI) {
+		ctx.ui.notify(msg, "info");
+	} else {
+		console.log(msg);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	const stats = createStats();
 	const failureTracker = new ConsecutiveFailureTracker();
@@ -660,12 +692,7 @@ pi.on("tool_result", async (event, ctx) => {
 		handler: async (_args, ctx) => {
 			const model = ctx.model;
 			if (!model) {
-				const msg = "❌ No active model found. Start a session first.";
-				if (ctx.hasUI) {
-					ctx.ui.notify(msg, "error");
-				} else {
-					console.error(msg);
-				}
+				showError(ctx, "❌ No active model found. Start a session first.");
 				return;
 			}
 
@@ -683,7 +710,7 @@ ${overview}
 This will consume LLM tokens. Continue?`,
 				);
 				if (!ok) {
-					ctx.ui.notify("Cancelled.", "info");
+					showInfo(ctx, "Cancelled.");
 					return;
 				}
 			}
@@ -691,11 +718,12 @@ This will consume LLM tokens. Continue?`,
 			// ── Phase 1: Analyze ─────────────────────────────────
 			console.error("[repair-layer] /repair-suggest: analyzing with", model.id);
 
-			// Show visible working indicator during long operation
-			if (ctx.hasUI) {
-				ctx.ui.setWorkingMessage("🔧 Analyzing repair patterns...");
-				ctx.ui.setWorkingVisible(true);
-			}
+			// Show visible progress widget
+			showProgress(ctx, [
+				"🔧 Repair Suggest - Analyzing",
+				"─────────────────────────",
+				"Phase 1/5: Gathering repair data...",
+			]);
 
 			try {
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -709,8 +737,22 @@ This will consume LLM tokens. Continue?`,
 					modelId: model.id,
 				};
 
-				// Phase callback for progress feedback
+			// Phase callback for progress feedback — updates both widget and status
 				const onPhase: PhaseCallback = (phase, message) => {
+					// Only update widget for generateSuggestions phases (1-5/5).
+					// composeIssueContent uses its own widget, not the 1-5 progress.
+					const phaseNum = phase === "gathering" ? "1" :
+						phase === "building-prompt" ? "2" :
+						phase === "calling-llm" ? "3" :
+						phase === "parsing" ? "4" :
+						phase === "formatting" ? "5" : undefined;
+					if (phaseNum) {
+						showProgress(ctx, [
+							"🔧 Repair Suggest - Analyzing",
+							"─────────────────────────",
+							`Phase ${phaseNum}/5: ${message}`,
+						]);
+					}
 					if (ctx.hasUI) {
 						ctx.ui.setStatus("repair-suggest", message);
 					}
@@ -720,11 +762,19 @@ This will consume LLM tokens. Continue?`,
 				const result = await generateSuggestions(llmConfig, undefined, undefined, onPhase);
 				const output = formatSuggestions(result);
 
+				// Show success in widget
+				showProgress(ctx, [
+					"✅ Repair Suggest — Analysis Complete",
+					"─────────────────────────",
+					`Found ${result.suggestions.length} suggestion(s)`,
+					`Events: ${result.analysisSummary.totalEvents} | Blindspots: ${result.analysisSummary.totalBlindspots}`,
+				]);
+
+				// Show result as notification
+				showInfo(ctx, output);
+
 				if (ctx.hasUI) {
 					ctx.ui.setStatus("repair-suggest", "✅ Analysis complete");
-					ctx.ui.notify(output, "info");
-				} else {
-					console.log(output);
 				}
 
 				// ── Phase 2: Open GitHub Issue with suggestion ──────
@@ -741,52 +791,68 @@ This will consume LLM tokens. Continue?`,
 					);
 
 					if (wantIssue) {
+						// Show progress for issue composition (separate from 1-5 analysis phases)
+						showProgress(ctx, [
+							"✍️ Repair Suggest — Composing Issue",
+							"─────────────────────────",
+							"Calling LLM to generate issue content...",
+						]);
 						ctx.ui.setStatus("repair-suggest", "✍️ Composing GitHub Issue...");
 
+						// Pass undefined for onPhase — issue phases are NOT analysis phases;
+						// the widget already shows "Composing Issue" above.
 						const issue = await composeIssueContent(
 							llmConfig,
 							result.suggestions,
 							result.recommendation,
 							result.analysisSummary,
-							onPhase,
+							undefined,
 						);
 
 						const owner = "renatocaliari";
 						const repo = "pi-tool-repair-layer";
 						const issueUrl = buildIssueUrl(owner, repo, issue);
 
-						// Open browser via macOS open command (async to avoid blocking)
-						exec(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 }, (err) => {
-							if (err) {
-								// fallback: just show the URL
-								ctx.ui.notify(`Open this link:\n${issueUrl}`, "info");
-							}
+						// Show progress for browser open
+						showProgress(ctx, [
+							"🌐 Repair Suggest — Opening Browser",
+							"─────────────────────────",
+							"Opening GitHub issue in browser...",
+						]);
+
+						// Open browser (async, callback runs AFTER finally block)
+						exec(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 }, (_err) => {
+							// The finally block already cleared the widget.
+							// Re-show success so user sees confirmation.
+							showProgress(ctx, [
+								"✅ Repair Suggest — Complete!",
+								"─────────────────────────",
+								"Issue opened in browser.",
+								"Review and click 'Submit new issue'.",
+							]);
+							// Clear widget after 5 seconds
+							setTimeout(() => clearProgress(ctx), 5000);
 						});
 
-						ctx.ui.notify(
+						showInfo(ctx,
 							"✅ Issue pre-filled in your browser. Review and click 'Submit new issue'.\n\n" +
-							"You just helped the repair-layer evolve. Every issue makes it smarter for everyone.",
-							"info",
+							"You just helped the repair-layer evolve. Every issue makes it smarter for everyone."
 						);
 					} else {
-						ctx.ui.notify("Issue submission skipped. You can run /repair-suggest again anytime.", "info");
+						showInfo(ctx, "Issue submission skipped. You can run /repair-suggest again anytime.");
 					}
 				} else if (implementNow.length === 0 && result.suggestions.length > 0) {
-					if (ctx.hasUI) {
-						ctx.ui.notify("No suggestions recommended for immediate implementation.", "info");
-					}
+					showInfo(ctx, "No suggestions recommended for immediate implementation.");
 				}
 			} catch (err) {
 				const errMsg = `Analysis failed: ${err}`;
-				if (ctx.hasUI) {
-					ctx.ui.notify(errMsg, "error");
-				} else {
-					console.error("[repair-layer]", errMsg);
-				}
+				showError(ctx, errMsg);
 			} finally {
+				// Clear the "Analysis Complete" widget.
+				// If the issue-browser path was taken, its exec callback will
+				// re-show a "Complete!" widget — that's intentional and harmless.
+				clearProgress(ctx);
 				if (ctx.hasUI) {
-					ctx.ui.setWorkingMessage(); // Clear working message
-					ctx.ui.setWorkingVisible(false); // Hide working indicator
 					ctx.ui.setStatus("repair-suggest", undefined);
 				}
 			}
