@@ -461,6 +461,7 @@ function trackAndInterceptFailures(
 			const helpText = getToolHelp(event.toolName);
 			console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
 
+			err.blindspotCategory = null; // being handled — no longer a blindspot
 			const rec: RepairEvent = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "cli_guidance", inputKeys);
 			recordEvent(rec);
 
@@ -557,6 +558,9 @@ pi.on("tool_result", async (event, ctx) => {
 	// Phase 2: EISDIR directory fallback
 	const fallback = await handleEisdirFallback(event, ctx, err, stats);
 	if (fallback.result) {
+		err.hasError = false;
+		err.executionErrorType = null;
+		err.blindspotCategory = null; // handled — no longer a blindspot
 		const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "directory_fallback");
 		recordEvent(rec);
 		return fallback.result;
