@@ -51,7 +51,7 @@ export function classifyErrorType(errorText: string | null): string | null {
   if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
   if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
   // Edit text mismatch — model tried to replace text that doesn't match exactly
-  if (lower.includes("could not find the exact text") || lower.includes("oldtext does not match")) return "EDIT_MISMATCH";
+  if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match")) return "EDIT_MISMATCH";
   // Schema validation errors — model sent arguments that violate the tool's JSON schema
   if (lower.includes("validation failed") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
   // HTTP status codes in error text

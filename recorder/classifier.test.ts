@@ -66,6 +66,9 @@ describe("classifyErrorType", () => {
   it("returns EDIT_MISMATCH for edit text mismatch errors", () => {
     expect(classifyErrorType("Could not find the exact text")).toBe("EDIT_MISMATCH");
     expect(classifyErrorType("oldText does not match")).toBe("EDIT_MISMATCH");
+    // edits[0]/edits[1] batch errors — model tried to edit non-existent text
+    expect(classifyErrorType("Could not find edits[0] in /path/to/file.ts. The oldText must match exactly including all whitespace and newlines.")).toBe("EDIT_MISMATCH");
+    expect(classifyErrorType("Could not find edits[1] in /path/to/file.ts. The oldText must match exactly including all whitespace and newlines.")).toBe("EDIT_MISMATCH");
   });
 
   it("picks the first matching category when multiple match", () => {
@@ -82,6 +85,9 @@ describe("classifyErrorType", () => {
   it("does not classify non-schema errors as SCHEMA_VALIDATION", () => {
     expect(classifyErrorType("no such file: package.json")).not.toBe("SCHEMA_VALIDATION");
     expect(classifyErrorType("timeout: operation timed out")).not.toBe("SCHEMA_VALIDATION");
+    // "must match" in edit errors should NOT trigger SCHEMA_VALIDATION
+    expect(classifyErrorType("Could not find edits[0] in /path/file.ts. The oldText must match exactly including all whitespace and newlines.")).not.toBe("SCHEMA_VALIDATION");
+    expect(classifyErrorType("Could not find the exact text in /path/file.ts. The old text must match exactly including all whitespace and newlines.")).not.toBe("SCHEMA_VALIDATION");
   });
 });
 
