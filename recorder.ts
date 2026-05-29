@@ -124,10 +124,6 @@ export function sessionLogPath(sessionId: string): string {
   return path.join(getRepairLogDir(), `${sessionId}.jsonl`);
 }
 
-export function sessionMetaPath(sessionId: string): string {
-  return path.join(getRepairLogDir(), `${sessionId}.meta.json`);
-}
-
 // ─── I/O ──────────────────────────────────────────────────────────────────
 
 /** Ensure repair-log directory exists. Sync to avoid race on first call. */

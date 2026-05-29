@@ -56,6 +56,9 @@ import {
 	getToolHelp,
 } from "./recorder.js";
 
+/** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
+const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
+
 
 
 /**
@@ -365,8 +368,6 @@ export default function (pi: ExtensionAPI) {
 			// Only flag as error when classifyErrorType found something concrete
 			// (ENOENT, EACCES, EISDIR, timeout, HTTP_*, etc.).
 			//
-			// Extension tools (agent_browser, ctx_execute, web_search, etc.) are
-			// NOT included — their error semantics differ per extension.
 			const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
 			if (NATIVE_CLI_TOOLS.has(event.toolName) && executionErrorType === null) {
 				hasError = false;
@@ -396,10 +397,9 @@ export default function (pi: ExtensionAPI) {
 
 			// For native CLI tools on 2nd+ failure, inject guidance via result content
 			// (same pattern as EISDIR directory fallback — proven safe)
-			const CLI_GUIDANCE_TOOLS = new Set(["bash", "grep", "find", "ls"]);
 			if (
 				consecutiveCount >= 2 &&
-				CLI_GUIDANCE_TOOLS.has(event.toolName)
+				NATIVE_CLI_TOOLS.has(event.toolName)
 			) {
 				const currentText = extractTextContent(event.content) ?? "";
 				const helpText = getToolHelp(event.toolName);
