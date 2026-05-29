@@ -56,6 +56,7 @@ import {
 	getToolHelp,
 	getErrorGuidance,
 } from "./recorder.js";
+import { execSync } from "node:child_process";
 import type { RepairEvent } from "./recorder.js";
 import { generateSuggestions, formatSuggestions, composeIssueContent, buildIssueUrl } from "./suggest-repairs.js";
 import type { LLMConfig, PhaseCallback, IssueContent } from "./suggest-repairs.js";
@@ -749,7 +750,6 @@ This will consume LLM tokens. Continue?`,
 						const issueUrl = buildIssueUrl(owner, repo, issue);
 
 						// Open browser via macOS open command
-						const { execSync } = await import("node:child_process");
 						try {
 							execSync(`open "${issueUrl.replace(/"/g, "\\\"")}"`, { timeout: 5000 });
 						} catch {
