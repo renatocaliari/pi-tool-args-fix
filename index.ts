@@ -44,6 +44,12 @@ import {
 	repairFieldValue,
 	repairObjectFields,
 	repairObjectFieldsWithTrace,
+	extractPathsFromArgs,
+	suggestAutoTimeout,
+	ContentHashCache,
+	simpleHash,
+	buildEditMismatchContext,
+	buildEnhancedEditMismatchGuidance,
 } from "./repairs.js";
 import { createStats, recordRepairs, formatStats, RepairToggle } from "./stats.js";
 import {
@@ -112,6 +118,7 @@ export default function (pi: ExtensionAPI) {
 	const stats = createStats();
 	const failureTracker = new ConsecutiveFailureTracker();
 	const repairToggle = new RepairToggle(true);
+	const contentHashCache = new ContentHashCache();
 	let eventSeq = 0;
 
 	// Prune old session logs at startup
@@ -185,6 +192,141 @@ export default function (pi: ExtensionAPI) {
 		// Step 2: Apply relational defaults
 		const withDefaults = applyRelationalDefaults(repaired);
 
+		// ── Step 3a: Auto-timeout injection (bash) ────────────────────────
+		if (event.toolName === "bash") {
+			const command = withDefaults.command as string | undefined;
+			const currentTimeout = withDefaults.timeout as number | undefined;
+			if (typeof command === "string") {
+				const suggested = suggestAutoTimeout(command, currentTimeout);
+				if (suggested !== undefined) {
+					withDefaults.timeout = suggested;
+					console.error(`[repair-layer] auto-timeout:${event.toolName} injected timeout=${suggested}s for command pattern`);
+				}
+			}
+		}
+
+		// ── Step 3b: Path validation (pre-flight ENOENT detection) ──────
+		const ENOENT_TOOLS = new Set(["read", "read_file", "write", "write_file", "edit", "edit_file", "bash", "ffgrep", "fffind"]);
+		if (ENOENT_TOOLS.has(event.toolName)) {
+			const paths = extractPathsFromArgs(withDefaults);
+			const invalidPaths: string[] = [];
+			for (const p of paths) {
+				const resolved = p.startsWith("~/") ? path.join(process.env.HOME || "/home/user", p.slice(2)) : p;
+				if (!resolved) continue;
+				// Only check paths that look like file paths (not URLs, not commands)
+				if (resolved.startsWith("http") || resolved.startsWith("-")) continue;
+				try {
+					const exists = await fs.stat(resolved).then(s => s.isFile() || s.isDirectory()).catch(() => false);
+					if (!exists) {
+						invalidPaths.push(resolved);
+					}
+				} catch { /* stat failed, skip */ }
+			}
+			if (invalidPaths.length > 0 && event.toolName !== "bash") {
+				// For file tools: return tool error with guidance before execution
+				const pathList = invalidPaths.map(p => `  - ${p}`).join("\n");
+				const guidance = [
+					`⚠️ Path validation: ${invalidPaths.length} path(s) not found.`,
+					pathList,
+					"",
+					"Possible fixes:",
+					"  • Check the file path spelling",
+					"  • The file may be in a different directory",
+					"  • You may need to create the file first (use write tool)",
+					"  • Use fffind or ls to discover the correct path",
+				].join("\n");
+
+				console.error(`[repair-layer] tool_call_blocked:${event.toolName} - ${invalidPaths.length} invalid paths`);
+
+				// Record blocked event
+				eventSeq++;
+				const callSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+				recordEvent({
+					ts: new Date().toISOString(),
+					eventType: "tool_result",
+					sessionId: callSessionId,
+					turnIndex: eventSeq,
+					toolName: event.toolName,
+					provider: ctx.model?.provider ?? "unknown",
+					model: ctx.model?.id ?? "unknown",
+					repairs: [],
+					wasRepaired: false,
+					executionFailed: true,
+					executionErrorType: "ENOENT",
+					wasHandled: true,
+					handleType: "path_validation",
+					blindspotCategory: null,
+					inputKeys: Object.keys(originalInput),
+					inputNullKeys: [],
+					inputExtraProps: [],
+				});
+
+				return {
+					content: [{ type: "text" as const, text: guidance }],
+					isError: true,
+				};
+			}
+		}
+
+		// ── Step 3c: Staleness check (edit tool — content hash cache) ───
+		if (event.toolName === "edit" || event.toolName === "edit_file") {
+			// Extract the file path from the edit request
+			let editPath: string | undefined;
+			if (event.toolName === "edit") {
+				editPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+			} else {
+				const files = (event.input as Record<string, unknown>)?.files as Array<Record<string, unknown>> | undefined;
+				if (files && files.length > 0) {
+					editPath = files[0]?.path as string | undefined;
+				}
+			}
+
+			if (editPath) {
+				const resolved = editPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", editPath.slice(2)) : editPath;
+				try {
+					const content = await fs.readFile(resolved, "utf-8");
+					if (contentHashCache.isStale(resolved, content)) {
+						const lastTurn = contentHashCache.getLastReadTurn(resolved);
+						const staleGuidance = [
+							`⚠️ File content has changed since it was last read (turn ${lastTurn}).`,
+							`The edit may overwrite newer content or the oldText no longer matches.`,
+							`Please re-read the file first with the read tool to get current content,`,
+							`then apply the edit with the exact current text as oldText.`,
+						].join("\n");
+
+						console.error(`[repair-layer] tool_call_blocked:${event.toolName} - stale content for ${resolved}`);
+
+						eventSeq++;
+						const callSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+						recordEvent({
+							ts: new Date().toISOString(),
+							eventType: "tool_result",
+							sessionId: callSessionId,
+							turnIndex: eventSeq,
+							toolName: event.toolName,
+							provider: ctx.model?.provider ?? "unknown",
+							model: ctx.model?.id ?? "unknown",
+							repairs: [],
+							wasRepaired: false,
+							executionFailed: true,
+							executionErrorType: "EDIT_MISMATCH",
+							wasHandled: true,
+							handleType: "staleness_check",
+							blindspotCategory: null,
+							inputKeys: Object.keys(originalInput),
+							inputNullKeys: [],
+							inputExtraProps: [],
+						});
+
+						return {
+							content: [{ type: "text" as const, text: staleGuidance }],
+							isError: true,
+						};
+					}
+				} catch { /* file doesn't exist yet for new files — that's fine */ }
+			}
+		}
+
 		// Step 4: Check if anything changed & collect repair descriptions
 		const repairedJson = JSON.stringify(withDefaults);
 		const repairSummary = originalJson !== repairedJson
@@ -223,10 +365,8 @@ export default function (pi: ExtensionAPI) {
 					"repair-layer",
 					ctx.ui.theme.fg("accent", `🔧 ${event.toolName}: ${summary}${more}`),
 				);
-				// Clear status after 3 seconds
-				setTimeout(() => {
-					ctx.ui.setStatus("repair-layer", undefined);
-				}, 3000);
+				// Clear transient repair message after 3s, restore permanent on/off indicator
+				setTimeout(() => setRepairStatus(ctx), 3000);
 			}
 		}
 
@@ -343,6 +483,38 @@ function buildToolResultEvent(
 }
 
 /**
+ * Enhanced EDIT_MISMATCH guidance: tries to read the target file and find
+ * the closest text region to the failed oldText, so the model gets context
+ * about what's actually in the file vs what it tried to match.
+ */
+async function enhanceEditMismatchGuidance(
+	event: any,
+	baseGuidance: string,
+): Promise<string | null> {
+	let filePath: string | undefined;
+	if (event.input?.path) {
+		filePath = event.input.path;
+	} else if (event.input?.files?.[0]?.path) {
+		filePath = event.input.files[0].path;
+	}
+	if (!filePath) return null;
+
+	const resolved = resolvePath(filePath, process.env.HOME);
+
+	const oldText = event.input?.oldText ?? event.input?.edits?.[0]?.oldText;
+	if (typeof oldText !== "string" || !oldText) return null;
+
+	try {
+		const fileContent = await fs.readFile(resolved, "utf-8");
+		const ctx = buildEditMismatchContext(fileContent, oldText);
+		if (!ctx) return null;
+		return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Phase 1.b: Track failures for consecutive detection.
  * Returns a patched result object when CLI guidance should be injected.
  */
@@ -366,7 +538,54 @@ function trackAndInterceptFailures(
 		// Guidance: native tools on 2nd+ consecutive failure
 		if (consecutiveCount >= 2 && GUIDANCE_TOOLS.has(event.toolName)) {
 			const currentText = extractTextContent(event.content) ?? "";
-			const helpText = getToolHelp(event.toolName);
+			let helpText = getToolHelp(event.toolName);
+
+			// Enhanced guidance for edit_file loops — more specific than generic help
+			if (event.toolName === "edit" || event.toolName === "edit_file") {
+				if (consecutiveCount >= 5) {
+					helpText += `\n\n⚠️ This is attempt #${consecutiveCount} to edit the same file with the same arguments.` +
+						`\nThe edit is clearly not matching the current file content.` +
+						`\nConsider an alternative approach:` +
+						`\n  • Read the file first with the read tool, then re-apply the edit with exact text` +
+						`\n  • Use the write tool to write the entire file content (if you know the full content)` +
+						`\n  • Create a new file instead of modifying an existing one`;
+				} else if (consecutiveCount >= 3) {
+					helpText += `\n\n💡 Tip: ${consecutiveCount} consecutive failures on this file. ` +
+						`The oldText may have whitespace differences (tabs vs spaces, trailing spaces). ` +
+						`Read the file and check indentation carefully.`;
+				}
+			}
+
+			// Circuit-break: 7+ consecutive failures → permanent error
+			// Forces the model to abandon this approach entirely
+			if (consecutiveCount >= 7) {
+				const circuitBreakMsg = [
+					`🔴 CIRCUIT BREAKER: Tool "${event.toolName}" has failed ${consecutiveCount} consecutive times.`,
+					`The current approach is not working and further retries will not help.`,
+					`Please switch to a completely different strategy:`,
+					`  • If editing: use the write tool to create a new version of the file`,
+					`  • If reading: verify the path exists (use ls or fffind)`,
+					`  • If running a command: simplify the command or check syntax`,
+					`  • Move on to a different task entirely`,
+					``,
+					`Error details: ${currentText.slice(0, 200)}`,
+				].join("\n");
+
+				console.error(`[repair-layer] tool_result_circuit_break:${event.toolName} - ${consecutiveCount} consecutive failures`);
+
+				err.blindspotCategory = null;
+				const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "circuit_break", inputKeys);
+				recordEvent(rec);
+
+				return {
+					result: {
+						content: [{ type: "text" as const, text: circuitBreakMsg }],
+						isError: true,
+					},
+					eventSeqDelta: 1,
+				};
+			}
+
 			console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
 
 			err.blindspotCategory = null; // being handled — no longer a blindspot
@@ -375,7 +594,7 @@ function trackAndInterceptFailures(
 
 			return {
 				result: {
-					content: [{ type: "text" as const, text: `${currentText}\n\n── Tool guidance ──\n${helpText}` }],
+					content: [{ type: "text" as const, text: `${currentText}\n\n🔧 Tool guidance ──\n${helpText}` }],
 					isError: true,
 				},
 				eventSeqDelta: 1,
@@ -428,7 +647,7 @@ async function handleEisdirFallback(
 				"repair-layer",
 				ctx.ui.theme.fg("accent", `🔧 read: directory fallback → ${dirName} (${entries.length} entries)`),
 			);
-			setTimeout(() => ctx.ui.setStatus("repair-layer", undefined), 3000);
+			setTimeout(() => setRepairStatus(ctx), 3000);
 		}
 
 		return {
@@ -450,12 +669,19 @@ pi.on("tool_result", async (event, ctx) => {
 	if (intercept.eventSeqDelta) eventSeq = eventSeq + intercept.eventSeqDelta;
 	if (intercept.result) return intercept.result;
 
-	// Phase 1.d: Error-type guidance (e.g. SCHEMA_VALIDATION) on first occurrence per tool+type
+// ─── Phase 1.d: Error-type guidance (e.g. SCHEMA_VALIDATION, EDIT_MISMATCH) ──
 	if (err.executionErrorType) {
 		const guidanceKey = `${event.toolName}:${err.executionErrorType}`;
 		if (!guidedErrorPairs.has(guidanceKey)) {
 			guidedErrorPairs.add(guidanceKey);
-			const guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
+			let guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
+
+			// Enhanced EDIT_MISMATCH: try to read file and offer context
+			if (err.executionErrorType === "EDIT_MISMATCH" && !err.blindspotCategory) {
+				const enhanced = await enhanceEditMismatchGuidance(event, guidanceText);
+				if (enhanced) guidanceText = enhanced;
+			}
+
 			if (guidanceText) {
 				const currentText = extractTextContent(event.content) ?? "";
 				err.blindspotCategory = null; // being handled — no longer a blindspot
@@ -463,7 +689,7 @@ pi.on("tool_result", async (event, ctx) => {
 				recordEvent(rec);
 				eventSeq++;
 				return {
-					content: [{ type: "text" as const, text: `${currentText}\n\n── Tool guidance ──\n${guidanceText}` }],
+					content: [{ type: "text" as const, text: `${currentText}\n\n🔧 Tool guidance ──\n${guidanceText}` }],
 					isError: true,
 				};
 			}
@@ -479,6 +705,52 @@ pi.on("tool_result", async (event, ctx) => {
 		const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "directory_fallback");
 		recordEvent(rec);
 		return fallback.result;
+	}
+
+	// ── Phase 2.b: Record content hash for staleness tracking ──────────
+	// When a read/read_file succeeds, cache the content hash so we can
+	// detect stale edits later.
+	if (!err.hasError && (event.toolName === "read" || event.toolName === "read_file")) {
+		const inputPath = (event.input as Record<string, unknown>)?.path;
+		if (typeof inputPath === "string" && inputPath) {
+			const resolved = inputPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", inputPath.slice(2)) : inputPath;
+			const content = extractTextContent(event.content);
+			if (content && content.length < 500_000) { // Skip huge files
+				try {
+					// Read the actual file content for accurate hash
+					const fileContent = await fs.readFile(resolved, "utf-8").catch(() => null);
+					if (fileContent !== null) {
+						contentHashCache.setHash(resolved, fileContent);
+						contentHashCache.recordRead(resolved, eventSeq);
+					}
+				} catch { /* skip unreadable */ }
+			}
+		}
+	}
+
+	// ── Phase 2.c: Expand EISDIR directory fallback for write tool ─────
+	if (!err.hasError && event.toolName === "write") {
+		const inputPath = (event.input as Record<string, unknown>)?.path;
+		if (typeof inputPath === "string" && inputPath) {
+			const resolved = inputPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", inputPath.slice(2)) : inputPath;
+			// Check if the write target's parent looks like a directory (common mistake)
+			// If path has no extension and the full path IS a directory, flag it
+			if (!path.extname(resolved)) {
+				try {
+					const stat = await fs.stat(resolved);
+					if (stat.isDirectory()) {
+						const entries = await fs.readdir(resolved);
+						const { listingContent, detail, dirName } = formatDirectoryListing(resolved, entries, "write");
+						console.error(`[repair-layer] tool_result_modified:write - ${detail}`);
+						recordRepairs(stats, [detail]);
+						return {
+							content: [{ type: "text" as const, text: listingContent }],
+							isError: false,
+						};
+					}
+				} catch { /* stat failed, not a directory — proceed */ }
+			}
+		}
 	}
 
 	// Phase 3: Record event

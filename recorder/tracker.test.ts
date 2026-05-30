@@ -72,4 +72,73 @@ describe("ConsecutiveFailureTracker", () => {
     expect(tracker.isInLoop("bash")).toBe(false);
     expect(tracker.getCount("bash")).toBe(0);
   });
+
+  // ─── Circuit Breaker Tests ────────────────────────────────────────
+
+  it("isCircuitBreak returns false before 7 consecutive", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 6; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.isCircuitBreak("bash")).toBe(false);
+  });
+
+  it("isCircuitBreak returns true at 7+ consecutive", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 7; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.isCircuitBreak("bash")).toBe(true);
+  });
+
+  it("isCircuitBreak returns true at 10 consecutive", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 10; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.isCircuitBreak("bash")).toBe(true);
+  });
+
+  it("getSeverity returns 'none' for 0-2 failures", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    expect(tracker.getSeverity("bash")).toBe("none");
+    tracker.recordFailure("bash", ["command"]);
+    expect(tracker.getSeverity("bash")).toBe("none");
+    tracker.recordFailure("bash", ["command"]);
+    expect(tracker.getSeverity("bash")).toBe("none");
+  });
+
+  it("getSeverity returns 'minor' at 3", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 3; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.getSeverity("bash")).toBe("minor");
+  });
+
+  it("getSeverity returns 'major' at 5", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 5; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.getSeverity("bash")).toBe("major");
+  });
+
+  it("getSeverity returns 'critical' at 7", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 7; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.getSeverity("bash")).toBe("critical");
+  });
+
+  it("getSeverity resets after success", () => {
+    const tracker = new ConsecutiveFailureTracker();
+    for (let i = 0; i < 5; i++) {
+      tracker.recordFailure("bash", ["command"]);
+    }
+    expect(tracker.getSeverity("bash")).toBe("major");
+    tracker.recordSuccess("bash");
+    expect(tracker.getSeverity("bash")).toBe("none");
+  });
 });

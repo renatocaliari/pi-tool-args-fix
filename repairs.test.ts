@@ -35,6 +35,21 @@ import {
   repairObjectFields,
   repairObjectFieldsWithTrace,
   ARRAY_ITEM_SCHEMAS,
+  isLongRunningCommand,
+  suggestAutoTimeout,
+  extractPathsFromArgs,
+  ContentHashCache,
+  simpleHash,
+  resolvePath,
+  isUrlOrFlag,
+  buildPathValidationGuidance,
+  buildStalenessGuidance,
+  buildCircuitBreakMessage,
+  buildEditLoopGuidance,
+  buildEditMismatchContext,
+  buildEnhancedEditMismatchGuidance,
+  REPAIRABLE_TOOLS,
+  ENOENT_TOOLS,
 } from "./repairs.js";
 
 // ─── Path Repair Tests ──────────────────────────────────────────────────
@@ -804,5 +819,522 @@ describe("repairObjectFields", () => {
       expect((result.config as Record<string, unknown>).newText).toBe("world");
       expect((result.config as Record<string, unknown>).path).toBeUndefined();
     });
+  });
+});
+
+// ─── Long-Running Command Detection Tests ────────────────────────────────────
+
+describe("isLongRunningCommand", () => {
+  it("detects build commands", () => {
+    expect(isLongRunningCommand("npm run build")).toBe(true);
+    expect(isLongRunningCommand("go build ./cmd/web/")).toBe(true);
+  });
+
+  it("detects test commands", () => {
+    expect(isLongRunningCommand("npx vitest run")).toBe(true);
+    expect(isLongRunningCommand("go test ./...")).toBe(true);
+  });
+
+  it("detects lint commands", () => {
+    expect(isLongRunningCommand("golangci-lint run")).toBe(true);
+    expect(isLongRunningCommand("npx eslint .")).toBe(true);
+  });
+
+  it("detects generate/compile/deploy", () => {
+    expect(isLongRunningCommand("templ generate")).toBe(true);
+    expect(isLongRunningCommand("go build")).toBe(true);
+    expect(isLongRunningCommand("npm run deploy")).toBe(true);
+  });
+
+  it("rejects simple commands", () => {
+    expect(isLongRunningCommand("ls -la")).toBe(false);
+    expect(isLongRunningCommand("echo hello")).toBe(false);
+    expect(isLongRunningCommand("cat file.ts")).toBe(false);
+    expect(isLongRunningCommand("cd /tmp")).toBe(false);
+  });
+
+  it("catches 'test' substring anywhere (intentional: false positive << false negative)", () => {
+    // The /test/i regex is intentionally broad. "contest" contains "test".
+    // This is a deliberate tradeoff: adding a timeout to a quick command
+    // is far safer than missing a timeout on a long-running one.
+    expect(isLongRunningCommand("contest --help")).toBe(true);
+    expect(isLongRunningCommand("testify")).toBe(true);
+    expect(isLongRunningCommand("cat protest-notes.md")).toBe(true);
+  });
+
+  it("catches 'build' substring anywhere (intentional: same tradeoff)", () => {
+    expect(isLongRunningCommand("building-info.sh")).toBe(true);
+    expect(isLongRunningCommand("rebuild-db --quick")).toBe(true);
+  });
+
+  it("rejects empty strings", () => {
+    expect(isLongRunningCommand("")).toBe(false);
+    expect(isLongRunningCommand("   ")).toBe(false);
+  });
+
+  it("returns true when pipe appears with tee", () => {
+    expect(isLongRunningCommand("make test 2>&1 | tee results.txt")).toBe(true);
+    expect(isLongRunningCommand("stress-test --loop 100 | tee bench.log")).toBe(true);
+  });
+
+  it("does NOT detect pipes without tee", () => {
+    expect(isLongRunningCommand("ls | head")).toBe(false);
+    expect(isLongRunningCommand("cat data.txt | sort")).toBe(false);
+  });
+});
+
+// ─── Auto-Timeouts Tests ────────────────────────────────────────────────────
+
+describe("suggestAutoTimeout", () => {
+  it("suggests 300s for build/test with no timeout", () => {
+    expect(suggestAutoTimeout("go test ./...", undefined)).toBe(300);
+    expect(suggestAutoTimeout("npm run build", undefined)).toBe(300);
+  });
+
+  it("suggests 120s for generate/deploy with no timeout", () => {
+    expect(suggestAutoTimeout("templ generate", undefined)).toBe(120);
+    expect(suggestAutoTimeout("npm run deploy", undefined)).toBe(120);
+  });
+
+  it("suggests 600s for piped commands with known output tools (timeout bug workaround)", () => {
+    expect(suggestAutoTimeout("cat huge-log.txt | head", undefined)).toBe(600);
+    expect(suggestAutoTimeout("./benchmark.sh | tee log.txt", undefined)).toBe(600);
+  });
+
+  it("still suggests 600s for piped commands even when some timeout already set", () => {
+    expect(suggestAutoTimeout("find / -name '*.config' | head", 30)).toBe(600);
+  });
+
+  it("does NOT inject pipe-timeout for commands without known pipe tools", () => {
+    expect(suggestAutoTimeout("cmd1 | cmd2", undefined)).toBeUndefined();
+    expect(suggestAutoTimeout("data | transform | output", undefined)).toBeUndefined();
+  });
+
+  it("suggests 120s when current timeout is too short for build", () => {
+    expect(suggestAutoTimeout("go build ./cmd/", 10)).toBe(120);
+  });
+
+  it("returns undefined for simple commands", () => {
+    expect(suggestAutoTimeout("ls -la", undefined)).toBeUndefined();
+    expect(suggestAutoTimeout("echo hello", undefined)).toBeUndefined();
+  });
+
+  it("returns undefined when existing timeout is adequate", () => {
+    expect(suggestAutoTimeout("go test ./...", 300)).toBeUndefined();
+  });
+});
+
+// ─── Path Extraction Tests ───────────────────────────────────────────────────
+
+describe("extractPathsFromArgs", () => {
+  it("extracts from path fields", () => {
+    const args = { path: "/tmp/file.ts", target: "/tmp/other.js" };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toContain("/tmp/file.ts");
+    expect(paths).toContain("/tmp/other.js");
+  });
+
+  it("extracts from files array as objects", () => {
+    const args = { files: [{ path: "/tmp/a.ts" }, { path: "/tmp/b.ts" }] };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toContain("/tmp/a.ts");
+    expect(paths).toContain("/tmp/b.ts");
+  });
+
+  it("extracts from files array as strings", () => {
+    const args = { files: ["/tmp/a.ts", "/tmp/b.ts"] };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toContain("/tmp/a.ts");
+    expect(paths).toContain("/tmp/b.ts");
+  });
+
+  it("extracts quoted paths from bash commands", () => {
+    const args = { command: "cat '/tmp/my file.ts'" };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toContain("/tmp/my file.ts");
+  });
+
+  it("handles null/undefined entries in files array gracefully", () => {
+    const args = { files: [{ path: "/tmp/a.ts" }, null, undefined, { path: "/tmp/d.ts" }] };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toContain("/tmp/a.ts");
+    expect(paths).toContain("/tmp/d.ts");
+    expect(paths).toHaveLength(2);
+  });
+
+  it("handles files entries without path property", () => {
+    const args = { files: [{ name: "config.json" }] };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toEqual([]);
+  });
+
+  it("returns empty array when no paths found", () => {
+    const args = { command: "echo hello" };
+    expect(extractPathsFromArgs(args)).toEqual([]);
+  });
+
+  it("handles empty args gracefully", () => {
+    expect(extractPathsFromArgs({})).toEqual([]);
+  });
+
+  it("handles args with null values", () => {
+    const args = { path: null, target: undefined };
+    const paths = extractPathsFromArgs(args);
+    expect(paths).toEqual([]);
+  });
+});
+
+// ─── ContentHashCache Tests ──────────────────────────────────────────────────
+
+describe("ContentHashCache", () => {
+  it("detects unchanged content as fresh", () => {
+    const cache = new ContentHashCache();
+    cache.setHash("/path/to/file.ts", "const x = 1;");
+    expect(cache.isStale("/path/to/file.ts", "const x = 1;")).toBe(false);
+  });
+
+  it("detects changed content as stale", () => {
+    const cache = new ContentHashCache();
+    cache.setHash("/path/to/file.ts", "const x = 1;");
+    expect(cache.isStale("/path/to/file.ts", "const x = 2;")).toBe(true);
+  });
+
+  it("returns false for never-read files", () => {
+    const cache = new ContentHashCache();
+    expect(cache.isStale("/path/to/unknown.ts", "content")).toBe(false);
+  });
+
+  it("records and retrieves last read turn", () => {
+    const cache = new ContentHashCache();
+    cache.recordRead("/path/to/file.ts", 42);
+    expect(cache.getLastReadTurn("/path/to/file.ts")).toBe(42);
+  });
+
+  it("returns -1 for files that were never read", () => {
+    const cache = new ContentHashCache();
+    expect(cache.getLastReadTurn("/path/to/unknown.ts")).toBe(-1);
+  });
+
+  it("reset clears all state", () => {
+    const cache = new ContentHashCache();
+    cache.setHash("/path/a.ts", "content");
+    cache.recordRead("/path/a.ts", 1);
+    cache.reset();
+    expect(cache.trackedFiles).toBe(0);
+    expect(cache.getLastReadTurn("/path/a.ts")).toBe(-1);
+  });
+
+  it("tracks file count and does not count overwrites", () => {
+    const cache = new ContentHashCache();
+    expect(cache.trackedFiles).toBe(0);
+    cache.setHash("/a.ts", "a");
+    expect(cache.trackedFiles).toBe(1);
+    cache.setHash("/b.ts", "b");
+    cache.setHash("/c.ts", "c");
+    expect(cache.trackedFiles).toBe(3);
+    // Overwriting same key does not increase count
+    cache.setHash("/a.ts", "a2");
+    expect(cache.trackedFiles).toBe(3);
+  });
+
+  it("overwrites hash for same path", () => {
+    const cache = new ContentHashCache();
+    cache.setHash("/a.ts", "old");
+    cache.setHash("/a.ts", "new");
+    expect(cache.isStale("/a.ts", "new")).toBe(false);
+    expect(cache.trackedFiles).toBe(1);
+  });
+});
+
+describe("simpleHash", () => {
+  it("returns consistent hash for same input", () => {
+    expect(simpleHash("hello")).toBe(simpleHash("hello"));
+  });
+
+  it("returns different hash for different input", () => {
+    expect(simpleHash("hello")).not.toBe(simpleHash("world"));
+  });
+
+  it("handles empty string without crashing", () => {
+    expect(() => simpleHash("")).not.toThrow();
+    const result = simpleHash("");
+    expect(result).toBe(simpleHash("")); // consistent
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("handles multiline content", () => {
+    const a = simpleHash("line1\nline2\nline3");
+    const b = simpleHash("line1\nline2\nline3");
+    expect(a).toBe(b);
+  });
+});
+
+// ─── Path Resolution Tests ──────────────────────────────────────────────────
+
+describe("resolvePath", () => {
+  it("resolves tilde to home directory", () => {
+    expect(resolvePath("~/dev/file.ts", "/Users/cali")).toBe("/Users/cali/dev/file.ts");
+  });
+
+  it("passes absolute paths through unchanged", () => {
+    expect(resolvePath("/etc/config.json", "/Users/cali")).toBe("/etc/config.json");
+  });
+
+  it("passes relative paths through unchanged", () => {
+    expect(resolvePath("./src/file.ts", "/Users/cali")).toBe("./src/file.ts");
+  });
+
+  it("uses default home when not provided", () => {
+    expect(resolvePath("~/file.ts")).toBe("/home/user/file.ts");
+  });
+
+  it("preserves tilde in non-leading position", () => {
+    expect(resolvePath("/path/~user/file.ts", "/home/x")).toBe("/path/~user/file.ts");
+  });
+
+  it("handles tilde with no home set", () => {
+    expect(resolvePath("~/")).toBe("/home/user/");
+  });
+
+  it("handles just tilde", () => {
+    expect(resolvePath("~", "/Users/test")).toBe("/Users/test");
+  });
+});
+
+describe("isUrlOrFlag", () => {
+  it("detects http URLs", () => {
+    expect(isUrlOrFlag("https://example.com/file")).toBe(true);
+    expect(isUrlOrFlag("http://localhost:8080")).toBe(true);
+  });
+
+  it("detects flag arguments", () => {
+    expect(isUrlOrFlag("-r")).toBe(true);
+    expect(isUrlOrFlag("--verbose")).toBe(true);
+  });
+
+  it("returns false for normal file paths", () => {
+    expect(isUrlOrFlag("/etc/hosts")).toBe(false);
+    expect(isUrlOrFlag("./src/main.ts")).toBe(false);
+    expect(isUrlOrFlag("../config.json")).toBe(false);
+  });
+
+  it("returns false for empty string", () => {
+    expect(isUrlOrFlag("")).toBe(false);
+  });
+});
+
+describe("buildPathValidationGuidance", () => {
+  it("includes all invalid paths", () => {
+    const guidance = buildPathValidationGuidance(["/tmp/missing.ts", "/opt/gone.txt"], "read");
+    expect(guidance).toContain("2 path(s) not found");
+    expect(guidance).toContain("/tmp/missing.ts");
+    expect(guidance).toContain("/opt/gone.txt");
+    expect(guidance).toContain("Possible fixes");
+  });
+
+  it("handles single invalid path", () => {
+    const guidance = buildPathValidationGuidance(["/tmp/missing.ts"], "read");
+    expect(guidance).toContain("1 path(s) not found");
+  });
+
+  it("handles empty path list", () => {
+    const guidance = buildPathValidationGuidance([], "read");
+    expect(guidance).toContain("0 path(s) not found");
+  });
+
+  it("is tool-agnostic (same content for different tools)", () => {
+    const g1 = buildPathValidationGuidance(["/x.ts"], "edit");
+    const g2 = buildPathValidationGuidance(["/x.ts"], "read");
+    expect(g1).toBe(g2);
+  });
+});
+
+describe("buildStalenessGuidance", () => {
+  it("includes the last read turn number", () => {
+    const guidance = buildStalenessGuidance(42);
+    expect(guidance).toContain("turn 42");
+    expect(guidance).toContain("re-read the file");
+  });
+
+  it("handles turn 0", () => {
+    const guidance = buildStalenessGuidance(0);
+    expect(guidance).toContain("turn 0");
+  });
+
+  it("mentions exact current text as oldText requirement", () => {
+    const guidance = buildStalenessGuidance(5);
+    expect(guidance).toContain("exact current text as oldText");
+  });
+});
+
+describe("buildCircuitBreakMessage", () => {
+  it("includes tool name and consecutive count", () => {
+    const msg = buildCircuitBreakMessage("edit", 10, "oldText not found");
+    expect(msg).toContain("edit");
+    expect(msg).toContain("10 consecutive");
+    expect(msg).toContain("CIRCUIT BREAKER");
+  });
+
+  it("truncates long error details to 200 chars", () => {
+    const longError = "x".repeat(500);
+    const msg = buildCircuitBreakMessage("bash", 7, longError);
+    expect(msg).toContain("x".repeat(200));
+    expect(msg).not.toContain("x".repeat(201));
+  });
+
+  it("suggests alternative strategies", () => {
+    const msg = buildCircuitBreakMessage("edit", 7, "failed");
+    expect(msg).toContain("write tool");
+    expect(msg).toContain("fffind");
+    expect(msg).toContain("completely different");
+  });
+
+  it("handles edge: 7 consecutive", () => {
+    const msg = buildCircuitBreakMessage("bash", 7, "timeout");
+    expect(msg).toContain("7 consecutive");
+  });
+});
+
+describe("buildEditLoopGuidance", () => {
+  it("returns whitespace tip for 3 failures", () => {
+    const msg = buildEditLoopGuidance(3);
+    expect(msg).toContain("whitespace");
+    expect(msg).not.toContain("write tool");
+  });
+
+  it("returns write tool alternative for 5 failures", () => {
+    const msg = buildEditLoopGuidance(5);
+    expect(msg).toContain("write tool");
+    expect(msg).toContain("entire file content");
+  });
+
+  it("returns write tool alternative for 7+ failures", () => {
+    const msg = buildEditLoopGuidance(7);
+    expect(msg).toContain("write tool");
+  });
+
+  it("returns tip for 4 failures (between 3 and 5)", () => {
+    const msg = buildEditLoopGuidance(4);
+    expect(msg).toContain("whitespace");
+  });
+});
+
+describe("REPAIRABLE_TOOLS", () => {
+  it("contains all core file tools", () => {
+    expect(REPAIRABLE_TOOLS.has("read")).toBe(true);
+    expect(REPAIRABLE_TOOLS.has("write")).toBe(true);
+    expect(REPAIRABLE_TOOLS.has("edit")).toBe(true);
+    expect(REPAIRABLE_TOOLS.has("bash")).toBe(true);
+  });
+
+  it("contains tool_call and tool_result pairs", () => {
+    expect(REPAIRABLE_TOOLS.has("read_file")).toBe(true);
+    expect(REPAIRABLE_TOOLS.has("edit_file")).toBe(true);
+    expect(REPAIRABLE_TOOLS.has("write_file")).toBe(true);
+  });
+
+  it("does NOT contain non-applicable tools", () => {
+    expect(REPAIRABLE_TOOLS.has("question")).toBe(false);
+    expect(REPAIRABLE_TOOLS.has("ask_user")).toBe(false);
+    expect(REPAIRABLE_TOOLS.has("unknown_custom")).toBe(false);
+  });
+});
+
+describe("ENOENT_TOOLS", () => {
+  it("contains file operation tools", () => {
+    expect(ENOENT_TOOLS.has("read")).toBe(true);
+    expect(ENOENT_TOOLS.has("write")).toBe(true);
+    expect(ENOENT_TOOLS.has("edit")).toBe(true);
+  });
+
+  it("contains search tools that accept paths", () => {
+    expect(ENOENT_TOOLS.has("ffgrep")).toBe(true);
+    expect(ENOENT_TOOLS.has("fffind")).toBe(true);
+  });
+
+  it("does NOT contain tools that don't accept file paths", () => {
+    expect(ENOENT_TOOLS.has("agent_browser")).toBe(false);
+    expect(ENOENT_TOOLS.has("web_search")).toBe(false);
+    expect(ENOENT_TOOLS.has("subagent")).toBe(false);
+  });
+});
+
+describe("buildEditMismatchContext", () => {
+  it("finds matching line prefix and returns context window", () => {
+    const content = `line one\nline two\nfunction hello() {\n  console.log("world");\n}\nline five`;
+    const result = buildEditMismatchContext(content, "function hello() {\n  console.log(\"bad\");");
+    expect(result).not.toBeNull();
+    expect(result!.matchLine).toBe(2); // 0-indexed
+    expect(result!.contextLines).toContain("→");
+    expect(result!.contextLines).toContain("function hello()");
+    expect(result!.contextLines).toContain("  3│"); // 0+1=1 line number
+  });
+
+  it("returns null for empty oldText", () => {
+    const result = buildEditMismatchContext("some\ncontent", "");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when no line prefix matches", () => {
+    const content = `const a = 1;\nconst b = 2;\nconst c = 3;`;
+    const result = buildEditMismatchContext(content, "function nonexistent() {");
+    expect(result).toBeNull();
+  });
+
+  it("clamps context at top boundary", () => {
+    const content = `first line\nsecond line\nthird line\nfourth line`;
+    const result = buildEditMismatchContext(content, "first line");
+    expect(result).not.toBeNull();
+    expect(result!.matchLine).toBe(0);
+    expect(result!.contextLines).not.toContain("  0│"); // no negative lines
+    expect(result!.contextLines).toContain("  1│");
+  });
+
+  it("clamps context at bottom boundary", () => {
+    const content = `line a\nline b\nlast line`;
+    const result = buildEditMismatchContext(content, "last line");
+    expect(result).not.toBeNull();
+    // Should show lines 1-3 without going beyond
+    expect(result!.contextLines).toContain("  3│");
+  });
+
+  it("marks only the exact matching line with arrow", () => {
+    const content = `aaa\nbbb\nccc`;
+    const result = buildEditMismatchContext(content, "bbb");
+    expect(result).not.toBeNull();
+    const arrowCount = (result!.contextLines.match(/ →/g) || []).length;
+    expect(arrowCount).toBe(1);
+    expect(result!.contextLines).toContain("bbb");
+  });
+
+  it("matches first 40 chars of oldText first line", () => {
+    const longLine = "a".repeat(100);
+    const content = [longLine, "something else"].join("\n");
+    const result = buildEditMismatchContext(content, "a".repeat(80));
+    expect(result).not.toBeNull();
+    expect(result!.matchLine).toBe(0);
+  });
+});
+
+describe("buildEnhancedEditMismatchGuidance", () => {
+  it("combines base guidance with file context", () => {
+    const context = { contextLines: "  5│ function foo() {", matchLine: 4 };
+    const result = buildEnhancedEditMismatchGuidance("read the file first", context);
+    expect(result).toContain("read the file first");
+    expect(result).toContain("📄 File context");
+    expect(result).toContain("5");
+    expect(result).toContain("does not match");
+  });
+
+  it("mentions the specific line number", () => {
+    const context = { contextLines: "  10│ const x = 1;", matchLine: 9 };
+    const result = buildEnhancedEditMismatchGuidance("base", context);
+    expect(result).toContain("line 10");
+  });
+
+  it("wraps context in code block", () => {
+    const context = { contextLines: "some code", matchLine: 0 };
+    const result = buildEnhancedEditMismatchGuidance("base", context);
+    expect(result).toContain("```");
   });
 });

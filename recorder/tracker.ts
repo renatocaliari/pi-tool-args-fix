@@ -7,6 +7,7 @@
  */
 
 const CONSECUTIVE_LIMIT = 3;
+const CIRCUIT_BREAK_LIMIT = 7;
 
 /**
  * Track consecutive failures per tool.
@@ -58,6 +59,24 @@ export class ConsecutiveFailureTracker {
    */
   isInLoop(toolName: string): boolean {
     return (this.counts.get(toolName) ?? 0) >= CONSECUTIVE_LIMIT;
+  }
+
+  /**
+   * Check if this tool has reached circuit-break level (7+ consecutive).
+   */
+  isCircuitBreak(toolName: string): boolean {
+    return (this.counts.get(toolName) ?? 0) >= CIRCUIT_BREAK_LIMIT;
+  }
+
+  /**
+   * Get loop severity.
+   */
+  getSeverity(toolName: string): LoopSeverity {
+    const count = this.counts.get(toolName) ?? 0;
+    if (count >= CIRCUIT_BREAK_LIMIT) return "critical";
+    if (count >= 5) return "major";
+    if (count >= CONSECUTIVE_LIMIT) return "minor";
+    return "none";
   }
 
   /** Reset all state (e.g. at session start). */

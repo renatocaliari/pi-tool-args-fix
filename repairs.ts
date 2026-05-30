@@ -607,7 +607,309 @@ export function formatDirectoryListing(
   return { listingContent, detail, dirName };
 }
 
+// ─── Path Validation Middleware ─────────────────────────────────────────────
+
+/**
+ * Regex patterns for command tokens that suggest long-running operations.
+ * Used for auto-timeout injection.
+ */
+export const LONG_RUNNING_TOKENS = [
+  /build/i,
+  /test/i,
+  /lint/i,
+  /generate/i,
+  /deploy/i,
+  /install/i,
+  /compile/i,
+  /migrate/i,
+  /format/i,
+  /bundle/i,
+  /pack/i,
+  /watch/i,
+  /\bdev\b/i,
+  /run\s+(benchmark|bench)/i,
+  /\b(ci|pipeline)\b/i,
+  /\|\s+tee\b/i,
+];
+
+/**
+ * Check if a bash command looks like a long-running operation
+ * that might need a larger timeout.
+ */
+export function isLongRunningCommand(command: string): boolean {
+  return LONG_RUNNING_TOKENS.some((re) => re.test(command));
+}
+
+/**
+ * Suggest an appropriate timeout_seconds for a bash command.
+ * Returns undefined if no change suggested.
+ *
+ * Rules:
+ * - If no timeout provided and command is long-running → suggest 300 (5 min)
+ * - If timeout < 30 and command is long-running → suggest 120 (2 min)
+ * - If command has pipes (known bug with timeout enforcement) → suggest 600 (10 min)
+ * - Otherwise → keep as-is
+ */
+export function suggestAutoTimeout(
+  command: string,
+  currentTimeout?: number,
+): number | undefined {
+  const hasPipes = /\|\s*(tee|cat|grep|sort|uniq|wc|head|tail)/.test(command);
+  const isLong = isLongRunningCommand(command);
+
+  if (!isLong && !hasPipes) return undefined;
+
+  // Pipe commands: known timeout enforcement bug in Claude Code and OpenCode
+  if (hasPipes) {
+    if (currentTimeout === undefined || currentTimeout < 600) {
+      return 600;
+    }
+    return undefined;
+  }
+
+  // Long-running command with no timeout
+  if (currentTimeout === undefined) {
+    return isLong && /\b(test|build|lint|compile)\b/i.test(command) ? 300 : 120;
+  }
+
+  // Long-running command with too-short timeout
+  if (isLong && currentTimeout < 30) {
+    return 120;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract file/directory path-like string values from tool arguments.
+ *
+ * Returns all string values from known path fields, plus string values
+ * from command fields that look like file paths.
+ */
+export function extractPathsFromArgs(
+  args: Record<string, unknown>,
+): string[] {
+  const paths: string[] = [];
+
+  // Direct path fields
+  for (const key of Object.keys(args)) {
+    if (PATH_FIELD_NAMES.has(key) && typeof args[key] === "string") {
+      paths.push(args[key] as string);
+    }
+  }
+
+  // Array fields that may contain paths (files, targets, etc.)
+  if (Array.isArray(args.files)) {
+    for (const file of args.files) {
+      if (typeof file === "string") paths.push(file);
+      else if (typeof file === "object" && file !== null) {
+        const f = file as Record<string, unknown>;
+        if (typeof f.path === "string") paths.push(f.path);
+      }
+    }
+  }
+
+  // Bash commands — extract paths/globs (anything that looks like a file reference)
+  if (typeof args.command === "string") {
+    const cmd = args.command as string;
+    // Match quoted file paths in commands
+    const quotedPaths = cmd.match(/['\"]([^'\"]+\.\w+)['\"]/g);
+    if (quotedPaths) {
+      for (const qp of quotedPaths) {
+        paths.push(qp.replace(/['\"]/g, ""));
+      }
+    }
+  }
+
+  return paths;
+}
+
+// ─── Path Resolution ─────────────────────────────────────────────────────────
+
+/** Known tools we can repair. */
+export const REPAIRABLE_TOOLS = new Set([
+  "read", "write", "edit", "bash",
+  "read_file", "edit_file", "write_file",
+  "get_file_skeleton", "get_function", "replace_symbol",
+  "find_symbol_references", "rename_symbol",
+  "ffgrep", "fffind",
+  "agent_browser", "web_search", "fetch_content",
+  "code_search", "subagent",
+  "ctx_execute", "ctx_execute_file",
+  "ctx_fetch_and_index", "ctx_batch_execute",
+  "ctx_index", "ctx_search",
+  "run_experiment", "log_experiment",
+  "grep", "find", "ls",
+]);
+
+/** Tools that should get pre-flight ENOENT path validation. */
+export const ENOENT_TOOLS = new Set([
+  "read", "read_file", "write", "write_file",
+  "edit", "edit_file", "bash", "ffgrep", "fffind",
+]);
+
+/**
+ * Resolve a user-provided path, handling tilde expansion.
+ * Pure function — no I/O.
+ */
+export function resolvePath(filePath: string, homeDir?: string): string {
+  if (filePath.startsWith("~")) {
+    const home = homeDir || "/home/user";
+    return home + filePath.slice(1);
+  }
+  return filePath;
+}
+
+/**
+ * Checks if a raw string looks like a URL or flag (not a file path).
+ * Pure function — no I/O.
+ */
+export function isUrlOrFlag(value: string): boolean {
+  return value.startsWith("http") || value.startsWith("-");
+}
+
+/**
+ * Build path validation guidance for tool error message.
+ * Pure function — no I/O.
+ */
+export function buildPathValidationGuidance(
+  invalidPaths: string[],
+  toolName: string,
+): string {
+  const pathList = invalidPaths.map(p => `  - ${p}`).join("\n");
+  return [
+    `⚠️ Path validation: ${invalidPaths.length} path(s) not found.`,
+    pathList,
+    "",
+    "Possible fixes:",
+    "  • Check the file path spelling",
+    "  • The file may be in a different directory",
+    "  • You may need to create the file first (use write tool)",
+    "  • Use fffind or ls to discover the correct path",
+  ].join("\n");
+}
+
+/**
+ * Build staleness guidance for edit tool when content hash has changed.
+ * Pure function — no I/O.
+ */
+export function buildStalenessGuidance(lastReadTurn: number): string {
+  return [
+    `⚠️ File content has changed since it was last read (turn ${lastReadTurn}).`,
+    "The edit may overwrite newer content or the oldText no longer matches.",
+    "Please re-read the file first with the read tool to get current content,",
+    "then apply the edit with the exact current text as oldText.",
+  ].join("\n");
+}
+
+/**
+ * Build circuit break message for the LLM (7+ consecutive failures).
+ * Pure function — no I/O.
+ */
+export function buildCircuitBreakMessage(
+  toolName: string,
+  consecutiveCount: number,
+  errorDetails: string,
+): string {
+  return [
+    `🔴 CIRCUIT BREAKER: Tool "${toolName}" has failed ${consecutiveCount} consecutive times.`,
+    "The current approach is not working and further retries will not help.",
+    "Please switch to a completely different strategy:",
+    "  • If editing: use the write tool to create a new version of the file",
+    "  • If reading: verify the path exists (use ls or fffind)",
+    "  • If running a command: simplify the command or check syntax",
+    "  • Move on to a different task entirely",
+    "",
+    `Error details: ${errorDetails.slice(0, 200)}`,
+  ].join("\n");
+}
+
+/**
+ * Build edit_file loop guidance (3+ or 5+ consecutive failures).
+ * Pure function — no I/O.
+ */
+export function buildEditLoopGuidance(consecutiveCount: number): string {
+  if (consecutiveCount >= 5) {
+    return [
+      `⚠️ This is attempt #${consecutiveCount} to edit the same file with the same arguments.`,
+      "The edit is clearly not matching the current file content.",
+      "Consider an alternative approach:",
+      "  • Read the file first with the read tool, then re-apply the edit with exact text",
+      "  • Use the write tool to write the entire file content (if you know the full content)",
+      "  • Create a new file instead of modifying an existing one",
+    ].join("\n");
+  }
+  return [
+    `💡 Tip: ${consecutiveCount} consecutive failures on this file. `,
+    "The oldText may have whitespace differences (tabs vs spaces, trailing spaces). ",
+    "Read the file and check indentation carefully.",
+  ].join("\n");
+}
+
+/**
+ * Content hash cache for staleness detection.
+ *
+ * Records content hashes when files are read, so we can detect when
+ * the model tries to edit a file whose content has changed since it
+ * was last read.
+ *
+ * Pure state container — no I/O.
+ */
+export class ContentHashCache {
+  /** path → content hash (using simple string hash) */
+  private hashes = new Map<string, string>();
+  /** path → turn index when last read */
+  private readTurns = new Map<string, number>();
+
+  /** Set the current hash for a file path. */
+  setHash(filePath: string, content: string): void {
+    this.hashes.set(filePath, simpleHash(content));
+  }
+
+  /** Record that a file was read at a given turn. */
+  recordRead(filePath: string, turn: number): void {
+    this.readTurns.set(filePath, turn);
+  }
+
+  /**
+   * Check if a file's content has changed since it was last recorded.
+   * @returns true if the file has been modified after the last recorded read
+   */
+  isStale(filePath: string, currentContent: string): boolean {
+    const recordedHash = this.hashes.get(filePath);
+    if (recordedHash === undefined) return false; // never read, never stale
+    return recordedHash !== simpleHash(currentContent);
+  }
+
+  /** Get the turn when the file was last read (or -1). */
+  getLastReadTurn(filePath: string): number {
+    return this.readTurns.get(filePath) ?? -1;
+  }
+
+  /** Clear all cached data. */
+  reset(): void {
+    this.hashes.clear();
+    this.readTurns.clear();
+  }
+
+  /** Track the current files in the cache (for diagnostics). */
+  get trackedFiles(): number {
+    return this.hashes.size;
+  }
+}
+
+/** Simple string hash (djb2 variant). Fast, no deps. */
+export function simpleHash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash.toString(36);
+}
+
 // ─── Object Field Repair ───────────────────────────────────────────────────
+
 
 /**
  * Apply repairs to a single field value based on its key.
@@ -791,4 +1093,52 @@ export function repairObjectFieldsWithTrace(
 	}
 
 	return [result, allRepairs];
+}
+
+/**
+ * Enhanced EDIT_MISMATCH text context: pure function that finds lines in
+ * fileContent that start similarly to oldText and returns annotated context.
+ * Returns null if no reasonable match is found (oldText too short, no prefix match).
+ */
+export function buildEditMismatchContext(
+	fileContent: string,
+	oldText: string,
+): { contextLines: string; matchLine: number } | null {
+	const lines = fileContent.split("\n");
+	const oldFirstLine = oldText.split("\n")[0].trim();
+	if (!oldFirstLine) return null;
+
+	const prefix = oldFirstLine.slice(0, 40);
+	const matchLine = lines.findIndex(l => l.trim().startsWith(prefix));
+	if (matchLine === -1) return null;
+
+	const start = Math.max(0, matchLine - 2);
+	const end = Math.min(lines.length, matchLine + 4);
+	const contextLines = lines.slice(start, end).map((l, i) => {
+		const lineNum = start + i + 1;
+		const marker = start + i === matchLine ? " →" : "  ";
+		return `${marker} ${String(lineNum).padStart(4)}│ ${l}`;
+	}).join("\n");
+
+	return { contextLines, matchLine };
+}
+
+/**
+ * Build the full enhanced EDIT_MISMATCH guidance string by combining
+ * base guidance with file context from buildEditMismatchContext.
+ */
+export function buildEnhancedEditMismatchGuidance(
+	baseGuidance: string,
+	context: { contextLines: string; matchLine: number },
+): string {
+	return [
+		baseGuidance,
+		"",
+		`📄 File context around the closest match to oldText:`,
+		"```",
+		context.contextLines,
+		"```",
+		`Note: line ${context.matchLine + 1} starts similarly to your oldText, but the exact`,
+		`text does not match. Read the file to see the full content before editing.`,
+	].join("\n");
 }

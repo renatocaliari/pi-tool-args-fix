@@ -10,13 +10,14 @@ import { isEisdirError } from "../repairs.js";
 
 /** Blindspot suggestions mapped by category. */
 export const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
-  EISDIR: "Add directory-listing fallback for read tool (similar to current EISDIR handler but as a documented pattern check).",
-  ENOENT: "Consider fuzzy path matching: retry with relative path, check common parent dirs.",
-  timeout: "Add auto-timeout extension for known long-running tools (build, test, lint).",
+  EISDIR: "✅ Already handled: directory-listing fallback for read/read_file. Consider expanding to write tool and bash cd cases.",
+  ENOENT: "Pre-execution path validation: extract all paths from args, check existence before tool runs, try variations (relative, extension variants, fuzzy fffind match), and return tool error with alternatives.",
+  timeout: "Auto-timeout injection: detect long-running command patterns (build, test, lint, piped commands) and inject timeout_seconds=300+ when missing or too short.",
   "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
   SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
-  CONSECUTIVE_LOOP: "The model is calling the same tool repeatedly with identical arguments and every call fails. The failure tracker can inject guidance or circuit-break after N attempts.",
+  CONSECUTIVE_LOOP: "Circuit breaker: after 3+ consecutive identical failures, inject tool-specific contextual guidance. After 7+, return permanent error forcing strategy change.",
   EMPTY_RESULT: "The tool returned successfully but with empty output — this can trigger silent loops where the model varies parameters endlessly looking for results.",
+  EDIT_MISMATCH: "Staleness check: before edit, verify file content hash matches what was last read. On mismatch, return tool error with 'file changed since last read — re-read first'.",
   model_null_field: "Add null-stripping in tool_call handler (already done for some fields — expand coverage to all optional fields).",
   model_domain_list: "Add comma/space-split to array repair (already done for some fields — verify field name coverage).",
   model_bare_array: "Add bare-string → array wrapping for this field (check ARRAY_FIELD_NAMES coverage).",
