@@ -290,6 +290,19 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.hasUI) {
 			ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", "🔧 repair: on"));
+
+			// Show a quick global snapshot so user knows what's happening across sessions
+			const allEvents = readAllEvents();
+			if (allEvents.length > 0) {
+				const agg = aggregateStats(allEvents);
+				const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
+				ctx.ui.notify(
+					`📊 Repair Layer — Global Overview\n` +
+					`${sessionIds.size} session(s), ${allEvents.length} events, ${agg.totalRepairs} repairs\n` +
+					`Type /repair-stats-global for details, /repair-suggest to suggest new fixes.`,
+					"info",
+				);
+			}
 		}
 	});
 
@@ -640,10 +653,11 @@ pi.on("tool_result", async (event, ctx) => {
 			const output = formatStats(stats);
 
 			if (ctx.hasUI) {
-				ctx.ui.notify(`📊 Repair Stats (this session)\n\n${output}`, "info");
+				ctx.ui.notify(`📊 Repair Stats (this session)\n\n${output}\n\n💡 Tip: run /repair-stats-global for all-session aggregate.`, "info");
 			} else {
 				console.log("📊 Repair Stats (this session)");
 				console.log(output);
+				console.log("💡 Tip: run /repair-stats-global for all-session aggregate.");
 			}
 		},
 	});
@@ -662,9 +676,10 @@ pi.on("tool_result", async (event, ctx) => {
 			const output = formatGlobalStats(agg, sessionIds.size) + footer;
 
 			if (ctx.hasUI) {
-				ctx.ui.notify(`${output}`, "info");
+				ctx.ui.notify(`${output}\n\n💡 Tip: run /repair-suggest to send patterns upstream and evolve the extension.`, "info");
 			} else {
 				console.log(output);
+				console.log("💡 Tip: run /repair-suggest to send patterns upstream and evolve the extension.");
 			}
 		},
 	});
