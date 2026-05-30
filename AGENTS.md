@@ -44,7 +44,7 @@ pi extension that intercepts tool_call events and fixes common LLM argument mist
 ## Naming
 
 - All code, identifiers: **English**
-- Extension commands: `/repair-stats`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
+- Extension commands: `/repair-on`, `/repair-off`, `/repair-toggle`, `/repair-stats-session`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
 - git branches: standard (main)
 
 ## Tech Stack

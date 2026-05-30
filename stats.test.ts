@@ -8,11 +8,127 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  RepairToggle,
   parseRepairType,
   createStats,
   recordRepairs,
   formatStats,
 } from "./stats.js";
+
+// ─── RepairToggle Tests ────────────────────────────────────────────────
+
+describe("RepairToggle", () => {
+  it("starts enabled by default", () => {
+    const t = new RepairToggle();
+    expect(t.isEnabled()).toBe(true);
+  });
+
+  it("accepts custom initial state (disabled)", () => {
+    const t = new RepairToggle(false);
+    expect(t.isEnabled()).toBe(false);
+  });
+
+  it("accepts custom initial state (enabled)", () => {
+    const t = new RepairToggle(true);
+    expect(t.isEnabled()).toBe(true);
+  });
+
+  it("on() enables a disabled toggle", () => {
+    const t = new RepairToggle(false);
+    t.on();
+    expect(t.isEnabled()).toBe(true);
+  });
+
+  it("on() is idempotent — calling twice keeps enabled", () => {
+    const t = new RepairToggle(true);
+    t.on();
+    t.on();
+    expect(t.isEnabled()).toBe(true);
+  });
+
+  it("off() disables an enabled toggle", () => {
+    const t = new RepairToggle(true);
+    t.off();
+    expect(t.isEnabled()).toBe(false);
+  });
+
+  it("off() is idempotent — calling twice keeps disabled", () => {
+    const t = new RepairToggle(false);
+    t.off();
+    t.off();
+    expect(t.isEnabled()).toBe(false);
+  });
+
+  it("toggle() flips from enabled to disabled", () => {
+    const t = new RepairToggle(true);
+    expect(t.toggle()).toBe(false);
+    expect(t.isEnabled()).toBe(false);
+  });
+
+  it("toggle() flips from disabled to enabled", () => {
+    const t = new RepairToggle(false);
+    expect(t.toggle()).toBe(true);
+    expect(t.isEnabled()).toBe(true);
+  });
+
+  it("toggle() returns the new state", () => {
+    const t = new RepairToggle(true);
+    expect(t.toggle()).toBe(false);
+    expect(t.toggle()).toBe(true);
+    expect(t.toggle()).toBe(false);
+  });
+
+  it("getStatusDisplay() shows on when enabled", () => {
+    const t = new RepairToggle(true);
+    expect(t.getStatusDisplay()).toBe("🔧 repair: on");
+  });
+
+  it("getStatusDisplay() shows off when disabled", () => {
+    const t = new RepairToggle(false);
+    expect(t.getStatusDisplay()).toBe("🔧 repair: off");
+  });
+
+  it("getNotifyMessage() shows auto-repaired when on", () => {
+    const t = new RepairToggle(true);
+    expect(t.getNotifyMessage()).toBe(
+      "🔧 repair: on — tool arguments will be auto-repaired"
+    );
+  });
+
+  it("getNotifyMessage() shows pass-through when off", () => {
+    const t = new RepairToggle(false);
+    expect(t.getNotifyMessage()).toBe(
+      "🔧 repair: off — tool arguments pass through unrepaired"
+    );
+  });
+
+  it("full state cycle: on → off → on → off", () => {
+    const t = new RepairToggle(true);
+    expect(t.isEnabled()).toBe(true);
+    t.off();
+    expect(t.isEnabled()).toBe(false);
+    t.on();
+    expect(t.isEnabled()).toBe(true);
+    t.off();
+    expect(t.isEnabled()).toBe(false);
+  });
+
+  it("status display updates after toggle", () => {
+    const t = new RepairToggle(true);
+    expect(t.getStatusDisplay()).toBe("🔧 repair: on");
+    t.toggle();
+    expect(t.getStatusDisplay()).toBe("🔧 repair: off");
+    t.toggle();
+    expect(t.getStatusDisplay()).toBe("🔧 repair: on");
+  });
+
+  it("notify message updates after toggle", () => {
+    const t = new RepairToggle(true);
+    expect(t.getNotifyMessage()).toContain("will be auto-repaired");
+    t.toggle();
+    expect(t.getNotifyMessage()).toContain("pass through unrepaired");
+  });
+});
 
 // ─── parseRepairType Tests ─────────────────────────────────────────────
 

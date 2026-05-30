@@ -5,6 +5,63 @@
  * Designed to be testable independently of the pi extension API.
  */
 
+// ─── Repair Toggle (enable/disable state machine) ───────────────────────
+
+/**
+ * Pure toggle state for the repair layer.
+ * Tracked per-session without depending on pi extension API.
+ *
+ * State machine:
+ *   ┌──────┐  on()   ┌───────┐
+ *   │ OFF  │ ──────→ │  ON   │
+ *   └──────┘ ←────── └───────┘
+ *              off()
+ *          toggle() flips both ways
+ *
+ * All transitions are idempotent: calling on() while ON is a no-op.
+ */
+export class RepairToggle {
+  private enabled: boolean;
+
+  constructor(initial = true) {
+    this.enabled = initial;
+  }
+
+  /** Enable the repair layer. Idempotent. */
+  on(): void {
+    this.enabled = true;
+  }
+
+  /** Disable the repair layer. Idempotent. */
+  off(): void {
+    this.enabled = false;
+  }
+
+  /** Flip current state. Returns new state. */
+  toggle(): boolean {
+    this.enabled = !this.enabled;
+    return this.enabled;
+  }
+
+  /** Current state. */
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  /** Status text for UI display. */
+  getStatusDisplay(): string {
+    return this.enabled ? "🔧 repair: on" : "🔧 repair: off";
+  }
+
+  /** Notification message for the user. */
+  getNotifyMessage(): string {
+    if (this.enabled) {
+      return "🔧 repair: on — tool arguments will be auto-repaired";
+    }
+    return "🔧 repair: off — tool arguments pass through unrepaired";
+  }
+}
+
 export type RepairType =
   | "parsed JSON"
   | "wrapped bare"

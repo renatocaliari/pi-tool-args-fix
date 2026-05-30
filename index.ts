@@ -278,6 +278,7 @@ function showInfo(ctx: any, msg: string): void {
 export default function (pi: ExtensionAPI) {
 	const stats = createStats();
 	const failureTracker = new ConsecutiveFailureTracker();
+	const repairToggle = new RepairToggle(true);
 	let eventSeq = 0;
 
 	// Prune old session logs at startup
@@ -287,32 +288,39 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// ─── TUI indicator: show/hide repair status in footer ───
-	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.hasUI) {
-			ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", "🔧 repair: on"));
+	function setRepairStatus(ctx: any): void {
+		if (!ctx.hasUI) return;
+		const display = repairToggle.getStatusDisplay();
+		ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", display));
+	}
 
-			// Show a quick global snapshot so user knows what's happening across sessions
-			const allEvents = readAllEvents();
-			if (allEvents.length > 0) {
-				const agg = aggregateStats(allEvents);
-				const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
-				ctx.ui.notify(
-					`📊 Repair Layer — Global Overview\n` +
-					`${sessionIds.size} session(s), ${allEvents.length} events, ${agg.totalRepairs} repairs\n` +
-					`Type /repair-stats-global for details, /repair-suggest to suggest new fixes.`,
-					"info",
-				);
-			}
+	pi.on("session_start", async (_event, ctx) => {
+		setRepairStatus(ctx);
+
+		// Show a quick global snapshot so user knows what's happening across sessions
+		const allEvents = readAllEvents();
+		if (allEvents.length > 0) {
+			const agg = aggregateStats(allEvents);
+			const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
+			ctx.ui.notify(
+				`📊 Repair Layer — Global Overview\n` +
+				`${sessionIds.size} session(s), ${allEvents.length} events, ${agg.totalRepairs} repairs\n` +
+				`Type /repair-stats-session for session details, /repair-stats-global for all-session aggregate, /repair-suggest to suggest new fixes.`,
+				"info",
+			);
 		}
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.hasUI) {
-			ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("dim", "🔧 repair: off"));
+			ctx.ui.setStatus("repair-layer", undefined);
 		}
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// Skip if repair layer is disabled
+		if (!repairToggle.isEnabled()) return undefined;
+
 		// Only repair known tools (skip custom/unknown tools to be safe)
 		const repairableTools = new Set([
 			"read", "write", "edit", "bash",
@@ -646,8 +654,44 @@ pi.on("tool_result", async (event, ctx) => {
 	return undefined;
 });
 
+	// ─── Command: repair on/off toggle ────────────────────────────
+	pi.registerCommand("repair-on", {
+		description: "Enable the repair layer (auto-fixes LLM tool arg mistakes)",
+		handler: async (_args, ctx) => {
+			if (repairToggle.isEnabled()) {
+				showInfo(ctx, "🔧 repair: already on");
+				return;
+			}
+			repairToggle.on();
+			setRepairStatus(ctx);
+			showInfo(ctx, repairToggle.getNotifyMessage());
+		},
+	});
+
+	pi.registerCommand("repair-off", {
+		description: "Disable the repair layer (passes raw tool args through)",
+		handler: async (_args, ctx) => {
+			if (!repairToggle.isEnabled()) {
+				showInfo(ctx, "🔧 repair: already off");
+				return;
+			}
+			repairToggle.off();
+			setRepairStatus(ctx);
+			showInfo(ctx, repairToggle.getNotifyMessage());
+		},
+	});
+
+	pi.registerCommand("repair-toggle", {
+		description: "Toggle repair layer on/off",
+		handler: async (_args, ctx) => {
+			repairToggle.toggle();
+			setRepairStatus(ctx);
+			showInfo(ctx, repairToggle.getNotifyMessage());
+		},
+	});
+
 	// ─── Command: in-memory session repair stats ─────────────────────
-	pi.registerCommand("repair-stats", {
+	pi.registerCommand("repair-stats-session", {
 		description: "Show repair layer statistics for this session (in-memory)",
 		handler: async (_args, ctx) => {
 			const output = formatStats(stats);

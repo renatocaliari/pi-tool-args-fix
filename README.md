@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-213_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-230_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
 
@@ -112,7 +112,7 @@ Because this is a **harness problem**, not a model problem. Even frontier models
 <br>
 
 - **Per-session JSONL logs** at `.pi/repair-log/<sessionId>.jsonl`
-- **4 commands** for live analysis: `/repair-stats`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
+- **7 commands** for live analysis: `/repair-on`, `/repair-off`, `/repair-toggle`, `/repair-stats-session`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
 - **28-field event schema** with error classification, blindspot detection, repair tracking
 - **50-session retention** with auto-prune
 - **DuckDB queryable** — standard JSONL format
@@ -149,7 +149,10 @@ pi install git:github.com/renatocaliari/pi-tool-repair-layer
 
 # That's it — every tool call is intercepted and repaired automatically.
 # Monitor what's happening with built-in commands:
-/repair-stats           # Repairs in this session
+/repair-on              # Enable repair layer (default)
+/repair-off             # Disable repair layer
+/repair-toggle          # Toggle on/off
+/repair-stats-session   # Repairs in this session
 /repair-stats-global    # Repairs across all sessions
 /repair-gaps            # Error patterns not yet covered
 /repair-suggest         # LLM suggestions for new repairs
@@ -224,7 +227,10 @@ Phase 3   — Event recording to JSONL + in-memory stats (tool_result)
 
 | Command | Description |
 |---------|-------------|
-| `/repair-stats` | In-memory stats for the current session |
+| `/repair-on` | Enable the repair layer (default) |
+| `/repair-off` | Disable — pass raw tool args through unrepaired |
+| `/repair-toggle` | Toggle repair layer on/off |
+| `/repair-stats-session` | In-memory stats for the current session |
 | `/repair-stats-global` | Aggregated stats across all logged sessions |
 | `/repair-gaps` | Error patterns without repair coverage |
 | `/repair-suggest` | LLM-powered blindspot analysis and new repair suggestions |
@@ -232,7 +238,7 @@ Phase 3   — Event recording to JSONL + in-memory stats (tool_result)
 ### Example: Session Stats
 
 ```
-> /repair-stats
+> /repair-stats-session
 
 📊 Repair Stats (this session)
 
@@ -421,10 +427,10 @@ pi-tool-repair-layer/
 ├── recorder/
 │   ├── classifier.ts         # Error classification + help text (~110 lines)
 │   └── tracker.ts            # Consecutive failure tracker (~70 lines)
-├── stats.ts                  # In-memory session stats (~115 lines)
+├── stats.ts                  # In-memory session stats + RepairToggle (~170 lines)
 ├── suggest-repairs.ts         # LLM repair suggestion engine (~940 lines)
 ├── suggest-repairs.test.ts   # 21 tests for suggestion engine
-├── *.test.ts                 # 213 tests across 6 files
+├── *.test.ts                 # 230 tests across 6 files
 └── README.md                 # You are here
 ```
 
@@ -456,8 +462,8 @@ The same philosophy applies to the observability commands:
 
 | On this command… | …you'll see this hint |
 |------------------|----------------------|
-| `session_start` (auto) | Global overview: sessions, events, repairs, + tip for `/repair-suggest` |
-| `/repair-stats` | 💡 Tip: run `/repair-stats-global` for all-session aggregate |
+| `session_start` (auto) | Global overview: sessions, events, repairs, + tips for `/repair-stats-session`, `/repair-stats-global`, `/repair-suggest` |
+| `/repair-stats-session` | 💡 Tip: run `/repair-stats-global` for all-session aggregate |
 | `/repair-stats-global` | 💡 Tip: run `/repair-suggest` to send patterns upstream |
 
 This creates a natural flow: start → inspect local stats → inspect global → suggest fixes → evolve.
