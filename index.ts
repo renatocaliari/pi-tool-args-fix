@@ -286,6 +286,19 @@ export default function (pi: ExtensionAPI) {
 		console.log(`[repair-layer] pruned ${pruned} old session log(s) (retention: 50)`);
 	}
 
+	// ─── TUI indicator: show/hide repair status in footer ───
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", "🔧 repair: on"));
+		}
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("dim", "🔧 repair: off"));
+		}
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		// Only repair known tools (skip custom/unknown tools to be safe)
 		const repairableTools = new Set([

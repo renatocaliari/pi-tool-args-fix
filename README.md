@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-204_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-213_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
 
@@ -253,14 +253,17 @@ Total                    31
 > /repair-suggest
 
 ⚡ Confirm: Analyze repair gaps?
-   Using commandcode/deepseek-v4-flash
+   Using claude/sonnet-4
    1526 events, 8 blindspots, 37 errors
    This will consume LLM tokens. Continue?
 
 ✓ (confirm)
 
-📊 Gathering repair data... → 📝 Building analysis prompt... → 🤖 Analyzing with LLM...
-(progress feedback via setStatus at each phase)
+┌─────────────────────────────────────────────┐
+│ 🔧 Repair Suggest - Analyzing               │  ◄ widget via setWidget()
+│ ─────────────────────────                    │
+│   ⠴ 🤖 Analyzing patterns with LLM...       │  ◄ Braille spinner animado
+└─────────────────────────────────────────────┘
 
 💡 Repair Suggestions (LLM-generated)
 ...
@@ -281,13 +284,32 @@ Total                    31
 
 ✓ (confirm)
 
-✍️ Composing GitHub Issue... → ✅ Opening browser...
+┌─────────────────────────────────────────────┐
+│ ✍️ Repair Suggest — Composing Issue         │
+│ ─────────────────────────                    │
+│   ✍️ Composing GitHub Issue...              │  ◄ dots spinner animado
+└─────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────┐
+│ 🌐 Repair Suggest — Opening Browser         │
+│ ─────────────────────────                    │
+│ Opening GitHub issue in browser...          │
+└─────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────┐
+│ ✅ Repair Suggest — Complete!               │
+│ ─────────────────────────                    │
+│ Issue opened in browser.                    │
+│ Review and click 'Submit new issue'.        │
+└─────────────────────────────────────────────┘
 
 ✅ Issue pre-filled in your browser.
    Review and click "Submit new issue".
    You just helped the repair-layer evolve.
    Every issue makes it smarter for everyone.
 ```
+
+**Progress feedback:** The command uses `ctx.ui.setWidget()` for a persistent progress widget above the editor. During analysis, an animated Braille spinner (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) runs at 300ms intervals during the LLM call. During Issue composition, an animated dots spinner ( . . . ) runs at 150ms intervals. Status bar updates via `ctx.ui.setStatus()` run alongside the widget. All timers are cleaned up in the `finally` block even on exception.
 
 **How it works:** The LLM composes a GitHub Issue (title + body with error patterns and code hints) and opens a pre-filled `New Issue` page via GitHub's URL query parameters — no API token, no setup. User reviews and clicks Submit.
 
@@ -392,16 +414,16 @@ ORDER BY cnt DESC;
 
 ```
 pi-tool-repair-layer/
-├── index.ts                  # Extension entry: handlers + commands (~917 lines)
+├── index.ts                  # Extension entry: handlers + commands (~978 lines)
 ├── repairs.ts                # Pure repair functions (~540 lines)
 ├── recorder.ts               # Event recording + analysis + re-exports (~545 lines)
 ├── recorder/
 │   ├── classifier.ts         # Error classification + help text (~110 lines)
 │   └── tracker.ts            # Consecutive failure tracker (~70 lines)
 ├── stats.ts                  # In-memory session stats (~115 lines)
-├── suggest-repairs.ts         # LLM repair suggestion engine (~742 lines)
-├── suggest-repairs.test.ts   # 17 tests for suggestion engine
-├── *.test.ts                 # 209 tests across 6 files
+├── suggest-repairs.ts         # LLM repair suggestion engine (~940 lines)
+├── suggest-repairs.test.ts   # 21 tests for suggestion engine
+├── *.test.ts                 # 213 tests across 6 files
 └── README.md                 # You are here
 ```
 
@@ -419,7 +441,7 @@ pi-tool-repair-layer/
 git clone https://github.com/renatocaliari/pi-tool-repair-layer
 cd pi-tool-repair-layer
 npm install
-npx vitest run   # 209 tests across 6 files
+npx vitest run   # 213 tests across 6 files
 ```
 
 ---
