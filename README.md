@@ -13,7 +13,7 @@
 
 <br>
 
-[💡 Concept](#-concept) · [✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🔍 Architecture](#-architecture) · [📊 Observability](#-observability) · [⚙️ Reference](#️-reference) · [🤝 Contributing](#-contributing)
+[💡 Concept](#-concept) · [✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🔍 Architecture](#-architecture) · [📊 Observability](#-observability) · [🔁 Auto-Evolution](#-auto-evolution) · [⚙️ Reference](#️-reference) · [🤝 Contributing](#-contributing)
 
 <br>
 
@@ -116,6 +116,7 @@ Because this is a **harness problem**, not a model problem. Even frontier models
 - **28-field event schema** with error classification, blindspot detection, repair tracking
 - **50-session retention** with auto-prune
 - **DuckDB queryable** — standard JSONL format
+- **Auto-evolution** — every session starts with a global overview; cross-command hints guide you from local stats → global stats → suggesting fixes upstream
 
 </details>
 
@@ -429,6 +430,38 @@ pi-tool-repair-layer/
 
 ---
 
+## 🔁 Auto-Evolution
+
+This extension is designed to evolve **through usage**, not just code changes. The `/repair-suggest` command is the evolution loop:
+
+```
+session logs ──► analyze blindspots ──► LLM generates fix suggestions
+                                             │
+                                             ▼
+                              pre-filled GitHub Issue ──► you review & submit
+                                                                 │
+                                                                 ▼
+                                        repo gets smarter → everyone updates
+```
+
+**How it works:** Every time you run `/repair-suggest`, the extension:
+1. Analyzes error patterns collected from your sessions
+2. Sends them to the LLM which composes concrete fix suggestions
+3. Opens a pre-filled GitHub Issue with code hints and examples
+4. You **review and submit** — no API token, no setup needed
+
+Every submitted Issue makes the extension smarter for everyone. Over time, the community collects patterns that no single developer would discover alone.
+
+The same philosophy applies to the observability commands:
+
+| On this command… | …you'll see this hint |
+|------------------|----------------------|
+| `session_start` (auto) | Global overview: sessions, events, repairs, + tip for `/repair-suggest` |
+| `/repair-stats` | 💡 Tip: run `/repair-stats-global` for all-session aggregate |
+| `/repair-stats-global` | 💡 Tip: run `/repair-suggest` to send patterns upstream |
+
+This creates a natural flow: start → inspect local stats → inspect global → suggest fixes → evolve.
+
 ## 🤝 Contributing
 
 1. Fork → branch → PR
@@ -436,13 +469,7 @@ pi-tool-repair-layer/
 3. Add tests for any new repair or handler phase
 4. Run `npx vitest run` before committing
 
-```bash
-# Development
-git clone https://github.com/renatocaliari/pi-tool-repair-layer
-cd pi-tool-repair-layer
-npm install
-npx vitest run   # 213 tests across 6 files
-```
+**Want the easiest contribution?** Just use `/repair-suggest` in your own sessions. Every submitted Issue is a contribution that helps everyone.
 
 ---
 
