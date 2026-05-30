@@ -32,6 +32,8 @@ import {
   extractTextContent,
   formatDirectoryListing,
   stripExtraPropertiesFromItems,
+  repairObjectFields,
+  repairObjectFieldsWithTrace,
   ARRAY_ITEM_SCHEMAS,
 } from "./repairs.js";
 
@@ -689,5 +691,118 @@ describe("stripExtraPropertiesFromItems", () => {
     const [result, stripped] = stripExtraPropertiesFromItems(input, "edits");
     expect(result).toEqual([[1, 2], { oldText: "a", newText: "b" }]);
     expect(stripped).toEqual([]);
+  });
+});
+
+describe("repairObjectFields", () => {
+  describe("content field protection (regression)", () => {
+    // Bug: repairObjectFieldsWithTrace was stripping null from content fields like
+    // oldText, which caused the edit tool's normalizeToLF() to receive undefined
+    // and crash with "Cannot read properties of undefined (reading 'replace')".
+    // Fix: convert null/undefined content fields to "" instead of stripping.
+
+    it("preserves null oldText as empty string (prevent .replace crash)", () => {
+      const input = { oldText: null, newText: "replacement" };
+      const [result, repairs] = repairObjectFieldsWithTrace(input);
+      expect(result.oldText).toBe("");
+      expect(result.newText).toBe("replacement");
+      // No repair should be logged for content field normalization
+      expect(repairs).toHaveLength(0);
+    });
+
+    it("preserves undefined newText as empty string", () => {
+      const input = { oldText: "original", newText: undefined };
+      const [result, repairs] = repairObjectFieldsWithTrace(input);
+      expect(result.oldText).toBe("original");
+      expect(result.newText).toBe("");
+      expect(repairs).toHaveLength(0);
+    });
+
+    it("preserves null command as empty string", () => {
+      const input = { command: null, path: "/tmp" };
+      const result = repairObjectFields(input);
+      expect(result.command).toBe("");
+      expect(result.path).toBe("/tmp");
+    });
+
+    it("preserves null code as empty string", () => {
+      const input = { code: null, language: "typescript" };
+      const result = repairObjectFields(input);
+      expect(result.code).toBe("");
+      expect(result.language).toBe("typescript");
+    });
+
+    it("preserves valid string content fields unchanged", () => {
+      const input = { oldText: "hello", newText: "world" };
+      const result = repairObjectFields(input);
+      expect(result.oldText).toBe("hello");
+      expect(result.newText).toBe("world");
+    });
+
+    it("handles edits array items with null oldText", () => {
+      // This is the exact scenario from the bug report:
+      // LLM sends edits: [{ oldText: null, newText: "..." }]
+      // Repair layer must NOT strip oldText from the item
+      const [result, repairs] = repairObjectFieldsWithTrace({ edits: [{ oldText: null, newText: "replacement" }] });
+      expect(result.edits).toEqual([{ oldText: "", newText: "replacement" }]);
+      expect(repairs).toHaveLength(0);
+    });
+
+    it("strips null from non-content fields", () => {
+      // Non-content fields should still be stripped as before
+      const [result, repairs] = repairObjectFieldsWithTrace({ path: null, timeout: null });
+      expect(result.path).toBeUndefined();
+      expect(result.timeout).toBeUndefined();
+      expect(repairs.length).toBeGreaterThanOrEqual(2);
+      expect(repairs[0]).toContain("stripped null");
+    });
+
+    it("strips null-like strings from non-content fields", () => {
+      const [result, repairs] = repairObjectFieldsWithTrace({ path: "null", timeout: "n/a" });
+      expect(result.path).toBeUndefined();
+      expect(result.timeout).toBeUndefined();
+      expect(repairs.length).toBeGreaterThanOrEqual(2);
+      expect(repairs[0]).toContain("stripped null-like");
+    });
+
+    it("preserves non-content non-null fields unchanged", () => {
+      const [result, repairs] = repairObjectFieldsWithTrace({ path: "/valid/path", timeout: 30 });
+      expect(result.path).toBe("/valid/path");
+      expect(result.timeout).toBe(30);
+      expect(repairs).toHaveLength(0);
+    });
+
+    it("handles mixed content and non-content fields", () => {
+      const input = {
+        oldText: null,
+        newText: "hello",
+        path: null,
+        timeout: 42,
+      };
+      const [result, repairs] = repairObjectFieldsWithTrace(input);
+      // Content fields preserved (null→"")
+      expect(result.oldText).toBe("");
+      expect(result.newText).toBe("hello");
+      // Non-content null stripped
+      expect(result.path).toBeUndefined();
+      expect(result.timeout).toBe(42);
+      // Only one repair logged (for path)
+      const nullRepairs = repairs.filter(r => r.includes("stripped null"));
+      expect(nullRepairs).toHaveLength(1);
+    });
+
+    it("recursively protects content fields in nested objects", () => {
+      const input = {
+        config: {
+          oldText: null,
+          newText: "world",
+          path: null,
+        },
+      };
+      const [result, repairs] = repairObjectFieldsWithTrace(input);
+      expect((result.config as Record<string, unknown>).oldText).toBe("");
+      expect((result.config as Record<string, unknown>).newText).toBe("world");
+      expect((result.config as Record<string, unknown>).path).toBeUndefined();
+    });
   });
 });
