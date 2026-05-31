@@ -46,6 +46,16 @@ export function translateSchemaValidationError(errorText: string): string | null
 		}
 	}
 
+	// Pattern: "edits[0] and edits[1] overlap in /path/to/file"
+	// The model sent multiple edits whose oldText regions overlap.
+	if (lower.includes("overlap")) {
+		const fileMatch = errorText.match(/overlap in (\/[^\s]+\.\w+)/);
+		const file = fileMatch ? fileMatch[1].trim() : "(unknown)";
+		const editMatch = errorText.match(/(edits\[\d+\]\s*and\s*edits\[\d+\])/);
+		const edits = editMatch ? editMatch[1] : "edits";
+		return `${edits} target overlapping regions in ${file}. Merge them into one edit or make each edits[i].oldText target a unique, non-overlapping part of the file.`;
+	}
+
 	// Pattern: "path: must have required properties path"
 	// The root object has a property "path" that is itself required — but the model
 	// omitted the entire argument. The "path: must have required properties path"
@@ -105,8 +115,8 @@ export function classifyErrorType(errorText: string | null): string | null {
   if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
   if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
   if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
-  // Edit text mismatch — model tried to replace text that doesn't match, is identical, or is non-unique
-  if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match") || lower.includes("replacement produced identical content") || lower.includes("no changes made to") || lower.includes("occurrences of the text") || (lower.includes("found ") && lower.includes(" occurrences of edits["))) return "EDIT_MISMATCH";
+  // Edit text mismatch — model tried to replace text that doesn't match, is identical, is non-unique, or overlaps
+  if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match") || lower.includes("replacement produced identical content") || lower.includes("no changes made to") || lower.includes("occurrences of the text") || lower.includes("overlap") || (lower.includes("found ") && lower.includes(" occurrences of edits["))) return "EDIT_MISMATCH";
   // Schema validation errors — model sent arguments that violate the tool's JSON schema
   if (lower.includes("validation failed") || lower.includes("must have required properties") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
   // HTTP status codes in error text
@@ -187,6 +197,7 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
         `\n  1. oldText NOT FOUND in the file → re-read the file and check whitespace/indentation` +
         `\n  2. oldText == newText (identical content) → the replacement would be a no-op; use a real different newText` +
         `\n  3. oldText matches MULTIPLE locations → add more surrounding context lines to make it unique` +
+        `\n  4. edits overlap (edits[N] and edits[M] share content) → merge overlapping edits into one edit block, or make each edits[i].oldText target a unique, non-overlapping region` +
         `\n` +
         `\nTo fix: read the file first with the read tool to get the current content, then use the exact text as oldText.`
       );

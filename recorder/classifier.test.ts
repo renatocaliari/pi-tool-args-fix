@@ -93,6 +93,7 @@ describe("classifyErrorType", () => {
     // Non-unique edits — "Found N occurrences of edits[N]"
     expect(classifyErrorType("Found 4 occurrences of edits[3] in /path/to/file.md. Each oldText must be unique.")).toBe("EDIT_MISMATCH");
     expect(classifyErrorType("Found 2 occurrences of edits[0] in /path/to/file.ts. Please provide more context to make it unique.")).toBe("EDIT_MISMATCH");
+    expect(classifyErrorType("edits[0] and edits[1] overlap in /path/to/file.md. Merge them into one edit or target disjoint regions.")).toBe("EDIT_MISMATCH");
   });
 
   it("picks the first matching category when multiple match", () => {
@@ -231,6 +232,13 @@ describe("translateSchemaValidationError", () => {
     const err = "edits: must have required properties edits";
     const result = translateSchemaValidationError(err);
     expect(result).toBe('Missing required argument: "edits" (must have required properties edits)');
+  });
+
+  it("translates overlap error into actionable instruction", () => {
+    const err = "edits[0] and edits[1] overlap in /path/to/file.md. Merge them into one edit or target disjoint regions.";
+    expect(translateSchemaValidationError(err)).toBe(
+      "edits[0] and edits[1] target overlapping regions in /path/to/file.md. Merge them into one edit or make each edits[i].oldText target a unique, non-overlapping part of the file.",
+    );
   });
 
   it("returns null for non-schema errors", () => {
