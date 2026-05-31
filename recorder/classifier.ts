@@ -46,13 +46,15 @@ export function classifyErrorType(errorText: string | null): string | null {
   if (!errorText) return null;
   if (isEisdirError(errorText)) return "EISDIR";
   const lower = errorText.toLowerCase();
+  // "Tool X not found" errors are tool-not-found, not file-not-found
+  if (lower.includes("tool ") && lower.includes(" not found")) return null;
   if (lower.includes("no such file") || lower.includes("not found") || lower.includes("enoent")) return "ENOENT";
   if (lower.includes("permission denied") || lower.includes("eacces") || lower.includes("eperm")) return "EACCES";
   if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
   if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
   if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
-  // Edit text mismatch — model tried to replace text that doesn't match exactly
-  if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match")) return "EDIT_MISMATCH";
+  // Edit text mismatch — model tried to replace text that doesn't match, is identical, or is non-unique
+  if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match") || lower.includes("replacement produced identical content") || lower.includes("no changes made to") || lower.includes("occurrences of the text") || (lower.includes("found ") && lower.includes(" occurrences of edits["))) return "EDIT_MISMATCH";
   // Schema validation errors — model sent arguments that violate the tool's JSON schema
   if (lower.includes("validation failed") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
   // HTTP status codes in error text
@@ -128,11 +130,12 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
       );
     case "edit":
       return (
-        `The edit tool replaces exact text in a file. It failed because the oldText was not found.` +
-        `\nCommon causes:` +
-        `\n  - The text has already been modified by a previous edit` +
-        `\n  - The text differs from the file content (whitespace, quotes, indentation)` +
-        `\n  - The file was modified externally` +
+        `The edit tool replaces exact text in a file.` +
+        `\nPossible failure modes:` +
+        `\n  1. oldText NOT FOUND in the file → re-read the file and check whitespace/indentation` +
+        `\n  2. oldText == newText (identical content) → the replacement would be a no-op; use a real different newText` +
+        `\n  3. oldText matches MULTIPLE locations → add more surrounding context lines to make it unique` +
+        `\n` +
         `\nTo fix: read the file first with the read tool to get the current content, then use the exact text as oldText.`
       );
     case "read":

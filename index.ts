@@ -49,8 +49,11 @@ import {
 	ContentHashCache,
 	buildEditMismatchContext,
 	buildEnhancedEditMismatchGuidance,
+	buildEditNonUniqueGuidance,
+	buildEditWrongFileGuidance,
 	extractFailedEditIndex,
 	extractFailedEditPath,
+	extractNonUniqueEditCount,
 	buildStalenessGuidance,
 	buildEditLoopGuidance,
 	buildCircuitBreakMessage,
@@ -169,6 +172,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// ── Phase A: tool_call field-level repairs ─────────────────────
 		// Skip if repair layer is disabled
 		if (!repairToggle.isEnabled()) return undefined;
 
@@ -396,12 +400,15 @@ export default function (pi: ExtensionAPI) {
 	// ─── tool_result: Execution error recording + directory fallback ──
 	// ─── tool_result: Execution error recording + directory fallback ──
 //
-// Handler phases:
-//   1. Classify error (pattern matching + CLI filter + safety net)
-//   1.b Track consecutive failures + inject CLI guidance on every failure
-//   1.c Detect empty results (analytics only)
-//   2. Handle EISDIR directory fallback (read / read_file)
-//   3. Record event to JSONL
+// Handler pipeline phases:
+//   Phase 1 — Classify error (pattern matching + CLI filter + safety net)
+//   Phase 2 — Detect empty results (analytics only)
+//   Phase 3 — Track consecutive failures + inject CLI guidance on every failure
+//   Phase 4 — Error-type guidance on first occurrence (e.g. SCHEMA_VALIDATION)
+//   Phase 5 — EISDIR directory fallback (read / read_file)
+//   Phase 6 — Record content hash for staleness tracking
+//   Phase 7 — Write tool directory fallback
+//   Phase 8 — Record event to JSONL
 
 /** Phase 1: Classify tool result error into canonical type. */
 function classifyToolResultError(
@@ -433,7 +440,7 @@ function classifyToolResultError(
 	return { hasError, executionErrorType, blindspotCategory };
 }
 
-/** Phase 1.c: Detect empty results (analytics only). */
+/** Phase 2: Detect empty results (analytics only). */
 function detectEmptyResult(
 	event: any,
 	err: { hasError: boolean; blindspotCategory: string | null },
@@ -518,9 +525,25 @@ async function enhanceEditMismatchGuidance(
 
 	try {
 		const fileContent = await fs.readFile(resolved, "utf-8");
+
+		// ── Case 1: Non-unique edits — "Found N occurrences of edits[N]" ──
+		const nonUniqueCount = extractNonUniqueEditCount(errorText);
+		if (nonUniqueCount !== undefined) {
+			const nonUniqueGuidance = buildEditNonUniqueGuidance(fileContent, oldText, nonUniqueCount);
+			if (nonUniqueGuidance) {
+				return `${baseGuidance}\n\n${nonUniqueGuidance}`;
+			}
+		}
+
+		// ── Case 2: Standard mismatch — try to find closest match ──
 		const ctx = buildEditMismatchContext(fileContent, oldText);
-		if (!ctx) return null;
-		return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+		if (ctx) {
+			return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+		}
+
+		// ── Case 3: Wrong file — no prefix match found at all ──
+		const inputPath: string = event.input?.path ?? filePath;
+		return `${baseGuidance}\n\n${buildEditWrongFileGuidance(inputPath, filePath)}`;
 	} catch {
 		// Error path failed (e.g. relative path from error text).
 		// Try the input path as fallback (usually the absolute path).
@@ -529,9 +552,22 @@ async function enhanceEditMismatchGuidance(
 			const resolvedFallback = resolvePath(fallbackPath, process.env.HOME);
 			try {
 				const fileContent = await fs.readFile(resolvedFallback, "utf-8");
+
+				// Try same 3 cases on fallback path
+				const nonUniqueCount = extractNonUniqueEditCount(errorText);
+				if (nonUniqueCount !== undefined) {
+					const nonUniqueGuidance = buildEditNonUniqueGuidance(fileContent, oldText, nonUniqueCount);
+					if (nonUniqueGuidance) {
+						return `${baseGuidance}\n\n${nonUniqueGuidance}`;
+					}
+				}
+
 				const ctx = buildEditMismatchContext(fileContent, oldText);
-				if (!ctx) return null;
-				return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+				if (ctx) {
+					return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+				}
+
+				return `${baseGuidance}\n\n${buildEditWrongFileGuidance(fallbackPath, filePath)}`;
 			} catch {
 				return null;
 			}
@@ -541,16 +577,16 @@ async function enhanceEditMismatchGuidance(
 }
 
 /**
- * Phase 1.b: Track failures for consecutive detection.
+ * Phase 3: Track consecutive failures and inject CLI guidance.
  * Returns a patched result object when CLI guidance should be injected.
  */
-function trackAndInterceptFailures(
+async function trackAndInterceptFailures(
 	event: any,
 	err: { hasError: boolean; executionErrorType: string | null; blindspotCategory: string | null },
 	failureTracker: ConsecutiveFailureTracker,
 	ctx: any,
 	eventSeq: number,
-): { result?: { content: any; isError: boolean }; eventSeqDelta: number } {
+): Promise<{ result?: { content: any; isError: boolean }; eventSeqDelta: number }> {
 	const inputKeys = Object.keys(event.input ?? {});
 	let delta = 0;
 
@@ -598,6 +634,12 @@ function trackAndInterceptFailures(
 				};
 			}
 
+			// For edit/EDIT_MISMATCH: enhance with file context instead of generic guidance
+			if ((event.toolName === "edit" || event.toolName === "edit_file") && err.executionErrorType === "EDIT_MISMATCH") {
+				const enhanced = await enhanceEditMismatchGuidance(event, helpText, currentText);
+				if (enhanced) helpText = enhanced;
+			}
+
 			console.error(`[repair-layer] tool_result_modified:${event.toolName} - consecutive failure ${consecutiveCount}, injecting CLI guidance`);
 
 			err.blindspotCategory = null; // being handled — no longer a blindspot
@@ -620,7 +662,7 @@ function trackAndInterceptFailures(
 }
 
 /**
- * Phase 2: Handle EISDIR directory fallback (read / read_file on a directory).
+ * Phase 5: Handle EISDIR directory fallback (read / read_file on a directory).
  * Returns a patched result with directory listing when applicable.
  */
 async function handleEisdirFallback(
@@ -676,12 +718,12 @@ pi.on("tool_result", async (event, ctx) => {
 	const err = classifyToolResultError(event);
 	detectEmptyResult(event, err);
 
-	// Phase 1.b: consecutive failure tracking + CLI guidance interception
-	const intercept = trackAndInterceptFailures(event, err, failureTracker, ctx, eventSeq);
+	// Phase 3: consecutive failure tracking + CLI guidance interception
+	const intercept = await trackAndInterceptFailures(event, err, failureTracker, ctx, eventSeq);
 	if (intercept.eventSeqDelta) eventSeq = eventSeq + intercept.eventSeqDelta;
 	if (intercept.result) return intercept.result;
 
-// ─── Phase 1.d: Error-type guidance (e.g. SCHEMA_VALIDATION, EDIT_MISMATCH) ──
+// ─── Phase 4: Error-type guidance (e.g. SCHEMA_VALIDATION, EDIT_MISMATCH) ──
 	if (err.executionErrorType) {
 		const guidanceKey = `${event.toolName}:${err.executionErrorType}`;
 		if (!guidedErrorPairs.has(guidanceKey)) {
@@ -709,7 +751,7 @@ pi.on("tool_result", async (event, ctx) => {
 		}
 	}
 
-	// Phase 2: EISDIR directory fallback
+	// Phase 5: EISDIR directory fallback
 	const fallback = await handleEisdirFallback(event, ctx, err, stats);
 	if (fallback.result) {
 		err.hasError = false;
@@ -720,7 +762,7 @@ pi.on("tool_result", async (event, ctx) => {
 		return fallback.result;
 	}
 
-	// ── Phase 2.b: Record content hash for staleness tracking ──────────
+	// ── Phase 6: Record content hash for staleness tracking ──────────
 	// When a read/read_file succeeds, cache the content hash so we can
 	// detect stale edits later.
 	if (!err.hasError && (event.toolName === "read" || event.toolName === "read_file")) {
@@ -741,7 +783,7 @@ pi.on("tool_result", async (event, ctx) => {
 		}
 	}
 
-	// ── Phase 2.c: Expand EISDIR directory fallback for write tool ─────
+	// ── Phase 7: Expand EISDIR directory fallback for write tool ─────
 	if (!err.hasError && event.toolName === "write") {
 		const inputPath = (event.input as Record<string, unknown>)?.path;
 		if (typeof inputPath === "string" && inputPath) {
@@ -766,7 +808,7 @@ pi.on("tool_result", async (event, ctx) => {
 		}
 	}
 
-	// Phase 3: Record event
+	// Phase 8: Record event
 	const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, false, null);
 	recordEvent(rec);
 	return undefined;

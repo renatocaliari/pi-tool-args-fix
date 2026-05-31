@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-230_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-401_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
 
@@ -34,6 +34,8 @@ Production LLMs (DeepSeek V4, Mimo 2.5, and others) share a surprising pattern: 
 
 | # | What the model emits | What the tool needs | Repair |
 |---|---------------------|---------------------|--------|
+| # | What the model emits | What the tool needs | Repair |
+|---|---------------------|---------------------|--------|
 | 1 | `{limit: null}` | omit the field entirely | Strip `null` from optional fields |
 | 2 | `paths: "[\"a.ts\",\"b.ts\"]"` | `paths: ["a.ts", "b.ts"]` | Parse stringified JSON arrays/objects |
 | 3 | `edits: {oldText, newText}` | `edits: [{oldText, newText}]` | Wrap bare object → single-element array |
@@ -44,8 +46,7 @@ Production LLMs (DeepSeek V4, Mimo 2.5, and others) share a surprising pattern: 
 | 8 | `name: "null"` | omit the field entirely | Strip null-like strings |
 | 9 | `strict: "true"` | `strict: true` | Coerce boolean strings |
 | 10 | `limit: "42"` | `limit: 42` | Coerce number strings |
-| 11 | `read ~/dir/` → EISDIR | `📁 Directory listing` | Directory fallback for `read` tool (also applicable to `read_file`) |
-| 12 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items |
+| 11 | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` | Strip extra properties from array items |
 
 ### Why not just use better models?
 
@@ -69,40 +70,58 @@ Because this is a **harness problem**, not a model problem. Even frontier models
 ## ✨ Features
 
 <details>
-<summary><strong>🔧 12 field-level repairs</strong> — structural fixes before the tool runs</summary>
+<summary><strong>🔧 9 field-level repairs</strong> — structural fixes before the tool runs (dispatch pipeline in <code>repairFieldValue</code>)</summary>
 
 <br>
 
-**Validate-then-repair:** every field is parsed first — valid input passes through unchanged. Content fields (`command`, `code`, `oldText`, `newText`, `text`) are **never** touched.
+All 9 are pure structural fixes: type coercion, array wrapping, string parsing. **Content fields** (`command`, `code`, `oldText`, `newText`, `text`) are **never** touched.
 
-| Priority | Repair | Description |
-|----------|--------|-------------|
-| 1 | `clean-path` | Unwrap markdown links, normalize `~/` paths |
-| 2 | `parse-json` | Stringified JSON → object/array |
-| 3 | `wrap-object-as-array` | `{...}` → `[{...}]` |
-| 4 | `wrap-array` | Bare value → `[value]` |
-| 5 | `split-string-to-array` | `"foo, bar"` → `["foo", "bar"]` |
-| 6 | `strip-extra-properties` | Remove unknown keys from array items (schema-aware) |
-| 7 | `null-like-to-undefined` | Strip `"null"`, `"none"`, `"n/a"` strings |
-| 8 | `coerce-boolean` | `"true"` / `"yes"` / `"1"` → `true` |
-| 9 | `coerce-number` | `"42"` / `"3.14"` → `42` / `3.14` |
-| — | Recurse into nested structures after type changes |
+| # | Action | What the model emits | What the tool needs |
+|---|--------|---------------------|---------------------|
+| 1 | `clean-path` | `path: "[notes.md](http://notes.md)"` | `path: "notes.md"` |
+| 2 | `parse-json` | `paths: "[\"a.ts\",\"b.ts\"]"` | `paths: ["a.ts", "b.ts"]` |
+| 3 | `wrap-object-as-array` | `edits: {oldText, newText}` | `edits: [{oldText, newText}]` |
+| 4 | `wrap-array` | `function_names: "main"` | `function_names: ["main"]` |
+| 5 | `split-string-to-array` | `tags: "admin, user"` | `tags: ["admin", "user"]` |
+| 6 | `strip-extra-properties` | `edits: [{oldText, newText, path}]` | `edits: [{oldText, newText}]` |
+| 7 | `null-like-to-undefined` | `name: "null"` | omit the field entirely |
+| 8 | `coerce-boolean` | `strict: "true"` | `strict: true` |
+| 9 | `coerce-number` | `limit: "42"` | `limit: 42` |
 
 </details>
 
 <details>
-<summary><strong>🛡️ Error recovery</strong> — catch failures, inject guidance, break retry loops</summary>
+<summary><strong>⚙️ Execution-aware features</strong> — defaults, fallbacks, and safety checks at runtime</summary>
 
 <br>
 
-| Mechanism | Trigger | Effect |
-|-----------|---------|--------|
-| **Directory fallback** | `read` / `read_file` on a directory → EISDIR | Returns `📁 Directory: listing` with contents |
-| **CLI guidance** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Appends `── Tool guidance ──` with exit code semantics |
-| **Edit guidance** | 2nd+ consecutive `edit` failure | Tells model to re-read the file before trying again |
-| **Schema guidance** | First `SCHEMA_VALIDATION` error per tool | Explains validation rules (types, enums, maxLength) |
-| **Loop detection** | 3+ consecutive same-tool failures | Flags as `CONSECUTIVE_LOOP` in analytics |
-| **Empty result detection** | Successful call, no output | Logs as `EMPTY_RESULT` for blindspot analysis |
+These aren't field repairs — they're runtime adjustments that make the agent more resilient.
+
+| Feature | When | What happens |
+|---------|------|--------------|
+| **Directory fallback** | `read`/`read_file` on a directory → EISDIR | Returns `📁 Directory: listing` with contents instead of failing |
+| **Write directory fallback** | `write` target path is an existing directory | Lists directory contents and returns as non-error |
+| **Relational defaults** | Tool has `limit` but no `offset` | Injects `offset: 1` so LLMs don't re-read the first page |
+| **Content hash staleness** | After every successful `read`/`read_file` | Caches a content hash so stale-edit guidance can detect drift |
+| **Empty result detection** | Tool succeeded but returned nothing | Logs `EMPTY_RESULT` for blindspot analysis (analytics only) |
+
+</details>
+
+<details>
+<summary><strong>🛡️ Error recovery guidance</strong> — error classification + context-aware help on failures</summary>
+
+<br>
+
+| Guidance | Trigger | Effect |
+|----------|---------|--------|
+| **CLI semantics** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Appends exit-code explanation and tool-specific tips |
+| **Edit mismatch** | `EDIT_MISMATCH` on 2nd+ consecutive `edit` failure | Reads the target file and shows current content around the failed `oldText` |
+| **Edit non-unique** | `oldText` matches multiple locations | Reports match count and line numbers so the model can narrow |
+| **Edit wrong file** | Error path differs from input path | Surfaces the mismatch with both paths |
+| **Schema validation** | First `SCHEMA_VALIDATION` error per tool | Explains validation rules (types, enums, maxLength) |
+| **Circuit breaker** | 7+ consecutive same-tool failures | Returns `🛑 Circuit breaker: strategy-change required` instead of looping |
+| **Auto-timeout** | Detected long-running command (install/build/test) | Suggests explicit `timeout_seconds` |
+| **Staleness** | edit failed and file changed since last read | Reports which turn the file was last read vs its current hash |
 
 </details>
 
@@ -132,7 +151,7 @@ Every error pattern without a repair is classified and surfaced. The `/repair-ga
 | `ENOENT` | File not found | Fuzzy path matching |
 | `EACCES` | Permission denied | Directory permissions |
 | `timeout` | Tool timed out | Auto-timeout extension |
-| `EDIT_MISMATCH` | Edit text not found | Read file before retry |
+| `EDIT_MISMATCH` | Edit text not found (3 sub-types) | Read-file context, non-unique oldText, wrong-file detection |
 | `SCHEMA_VALIDATION` | Schema violation | Field-level truncation |
 | `CONSECUTIVE_LOOP` | 3+ same-tool failures | Circuit break, guidance |
 | `EMPTY_RESULT` | Tool succeeded, no output | Analytics only |
@@ -208,15 +227,20 @@ After any structural change, nested objects/arrays are recursively validated.
 
 ### Event Pipeline
 
-Every `tool_call` and `tool_result` flows through 5 handler phases:
+Every `tool_call` and `tool_result` flows through 9 handler phases:
 
 ```
-Phase 1.a — Field repair (tool_call)
-Phase 1.b — Consecutive failure tracking + guidance injection (tool_result)
-Phase 1.c — Empty result detection (tool_result)
-Phase 1.d — Error-type guidance on first occurrence (tool_result)
-Phase 2   — EISDIR directory fallback (tool_result)
-Phase 3   — Event recording to JSONL + in-memory stats (tool_result)
+| Phase | Handler | Purpose |
+|-------|---------|---------|
+| **A** | `tool_call` | Field-level repairs (pre-execution) |
+| **1** | `tool_result` | Error classification |
+| **2** | `tool_result` | Empty result detection |
+| **3** | `tool_result` | Consecutive failure tracking + CLI guidance |
+| **4** | `tool_result` | Error-type guidance on first occurrence |
+| **5** | `tool_result` | EISDIR directory fallback |
+| **6** | `tool_result` | Content hash staleness tracking |
+| **7** | `tool_result` | Write tool directory fallback |
+| **8** | `tool_result` | Event recording to JSONL
 ```
 
 ---
@@ -406,7 +430,7 @@ ORDER BY cnt DESC;
 | `timeout` / `timed out` | `timeout` |
 | `rate limit` / `429` | `rate_limit` |
 | `bad request` / `400` | `bad_request` |
-| `could not find the exact text` / `could not find edits[*]` / `oldText does not match` | `EDIT_MISMATCH` |
+| `could not find the exact text` / `could not find edits[*]` / `oldText does not match` / `replacement produced identical content` / `no changes made to` / `occurrences of the text` | `EDIT_MISMATCH` |
 | `Validation failed` / `must not have more than` / `must be one of` / `must match` | `SCHEMA_VALIDATION` |
 | `4xx` / `5xx` HTTP codes | `HTTP_<code>` |
 
@@ -421,16 +445,19 @@ ORDER BY cnt DESC;
 
 ```
 pi-tool-repair-layer/
-├── index.ts                  # Extension entry: handlers + commands (~978 lines)
-├── repairs.ts                # Pure repair functions (~540 lines)
-├── recorder.ts               # Event recording + analysis + re-exports (~545 lines)
+├── index.ts                  # Extension entry: handlers + commands (~1193 lines)
+├── repairs.ts                # Pure repair functions + dispatch table + guidance (~1196 lines)
+├── repairs/constants.ts      # 8 constant sets (PATH, ARRAY, BOOLEAN, etc.) (~152 lines)
+├── recorder.ts               # Event recording + analysis + re-exports (~372 lines)
 ├── recorder/
-│   ├── classifier.ts         # Error classification + help text (~110 lines)
-│   └── tracker.ts            # Consecutive failure tracker (~70 lines)
-├── stats.ts                  # In-memory session stats + RepairToggle (~170 lines)
-├── suggest-repairs.ts         # LLM repair suggestion engine (~940 lines)
-├── suggest-repairs.test.ts   # 21 tests for suggestion engine
-├── *.test.ts                 # 230 tests across 6 files
+│   ├── classifier.ts         # Error classification + CLI help text (~184 lines)
+│   ├── tracker.ts            # Consecutive failure tracker (~87 lines)
+│   └── formatting.ts         # Text formatting helpers
+├── stats.ts                  # In-memory session stats + RepairToggle (~165 lines)
+├── suggest-repairs.ts        # LLM repair suggestion engine (~940 lines)
+├── docs/repair-catalog.md    # Source of truth for all repair function signatures
+├── testing-strategy.md       # Test coverage and mutation strategy
+├── *.test.ts                 # 401 tests across 6 files
 └── README.md                 # You are here
 ```
 

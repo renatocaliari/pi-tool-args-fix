@@ -28,28 +28,33 @@ generated_at: 2026-05-27
 ## Coverage Results
 | Metric | Score | Threshold | Status |
 |--------|-------|-----------|--------|
-| Statements | 98.38% | 70% | ✅ PASS |
-| Branches | 95.27% | 60% | ✅ PASS |
+| Statements | 98.11% | 70% | ✅ PASS |
+| Branches | 96.01% | 60% | ✅ PASS |
 | Functions | 100% | 70% | ✅ PASS |
-| Lines | 98.38% | 70% | ✅ PASS |
+| Lines | 98.11% | 70% | ✅ PASS |
 
 ## Test Count (current)
 | Test File | Tests | Mutations Target |
 |-----------|-------|------------------|
-| `repairs.test.ts` | 88 | 70% |
-| `recorder.test.ts` | 70 | 70% |
+| `repairs.test.ts` | 252 (237 + 15 structural) | 70% |
+| `recorder.test.ts` | 101 | 70% |
 | `stats.test.ts` | 23 | 50% |
-| **Total** | **181** | — |
+| `suggest-repairs.test.ts` | 21 | — |
+| **Total** | **397** | — |
 
 ## Test Structure
 
-### Unit Tests: repairs.test.ts (88 tests)
-- **All repair functions** covered
-- **TDD approach**: Tests written for critical business logic
+### Unit Tests: repairs.test.ts (252 tests)
+- **237 behavioral tests**: All repair functions covered + edge cases
+- **15 structural integrity tests**: Verificam que Fase 3/4 extração não foi revertida (v0 abaixo)
+- **Fase 3 predicates**: `isBooleanField`, `looksLikeNumberField` (via `classifyField`)
+- **Fase 4 dispatch table**: `repairDispatchers` lookup covers all 8 actions
+- **Edit guidance**: `extractNonUniqueEditCount`, `findAllOldTextMatchLines`, `buildEditNonUniqueGuidance`, `buildEditWrongFileGuidance`, `extractFailedEditIndex`, `extractFailedEditPath`, `buildEditMismatchContext`, `buildEnhancedEditMismatchGuidance`
+- **Constants**: all 8 sets from `repairs/constants.ts` tested indirectly via classifyField
 - **No mocks**: Pure functions, no dependencies to mock
-- **Edge cases**: Comprehensive boundary condition testing
+- **Edge cases**: Null/undefined inputs, boundary conditions, recovery
 
-### Unit Tests: recorder.test.ts (70 tests)
+### Unit Tests: recorder.test.ts (101 tests)
 - **I/O**: ensureDir, recordEvent, readSessionEvents, readAllEvents, pruneOldSessions, malformed JSON, fallback session ID
 - **aggregateStats**: counts, byTool, byModel, byRepairType, byErrorType, empty input
 - **extractRepairTypes**: known patterns, empty input, unrecognized patterns
@@ -61,6 +66,17 @@ generated_at: 2026-05-27
 
 ### Unit Tests: stats.test.ts (23 tests)
 - createStats, recordRepairs, formatStats, repair history
+
+### Unit Tests: suggest-repairs.test.ts (21 tests)
+- gatherAnalysisData, extractJSON, parseSuggestions, formatSuggestions, parseIssueContent, buildIssueUrl, callLLM timeout
+
+## Reference
+
+**Repair function catalog:** `docs/repair-catalog.md` — source of truth for all repair functions, classification predicates, constants, and the dispatch table. Updated when functions are added or removed.
+
+**README:** `README.md` — user-facing docs with 9 field-level repairs, 5 execution-aware features, and 8 error recovery guidance items.
+
+**Test verification:** Before any refactoring, run `npx vitest run` (382 tests) and `npx vitest run --coverage` to verify no regressions.
 
 ## Anti-Patterns Avoided
 - ❌ No mocks for simple functions (pure functions)
@@ -99,3 +115,6 @@ npm run test:watch
 2. Set up Stryker for mutation testing
 3. Add security scanning with ESLint
 4. Set up CI/CD pipeline with GitHub Actions
+5. ✅ Repair catalog created at `docs/repair-catalog.md`
+6. ✅ AGENTS.md updated with repair preservation instructions
+7. ✅ Coverage gaps documented (normal pass-through branches)

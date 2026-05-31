@@ -95,13 +95,7 @@ export function parseRepairType(detail: string): RepairType | null {
     return match[1] as RepairType;
   }
 
-  // Handle coerced values with different format
-  if (detail.includes(": coerced boolean")) {
-    return "coerced boolean";
-  }
-  if (detail.includes(": coerced number")) {
-    return "coerced number";
-  }
+  // NOTE: coerced boolean/number are already matched by the regex above
 
   return null;
 }

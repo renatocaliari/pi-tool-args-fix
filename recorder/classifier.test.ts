@@ -64,12 +64,34 @@ describe("classifyErrorType", () => {
     expect(classifyErrorType("\nCommand exited with code 1")).toBeNull();
   });
 
+  it("classifies 'replacement produced identical content' as EDIT_MISMATCH", () => {
+    expect(classifyErrorType("No changes made to /path/file.ts. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.")).toBe("EDIT_MISMATCH");
+  });
+
+  it("classifies 'no changes made to' as EDIT_MISMATCH", () => {
+    expect(classifyErrorType("No changes made to /path/file.ts")).toBe("EDIT_MISMATCH");
+  });
+
+  it("classifies single-oldText non-unique errors as EDIT_MISMATCH", () => {
+    expect(classifyErrorType("Found 40 occurrences of the text in /path/to/file.ts. The text must be unique. Please provide more context to make it unique.")).toBe("EDIT_MISMATCH");
+  });
+
+  it("returns null for 'Tool X not found' (tool-not-found != file-not-found)", () => {
+    expect(classifyErrorType("Tool fffind not found")).toBeNull();
+    expect(classifyErrorType("Tool agent_browser not found")).toBeNull();
+    // Regular "not found" should still match ENOENT
+    expect(classifyErrorType("no such file: package.json")).toBe("ENOENT");
+  });
+
   it("returns EDIT_MISMATCH for edit text mismatch errors", () => {
     expect(classifyErrorType("Could not find the exact text")).toBe("EDIT_MISMATCH");
     expect(classifyErrorType("oldText does not match")).toBe("EDIT_MISMATCH");
     // edits[0]/edits[1] batch errors — model tried to edit non-existent text
     expect(classifyErrorType("Could not find edits[0] in /path/to/file.ts. The oldText must match exactly including all whitespace and newlines.")).toBe("EDIT_MISMATCH");
     expect(classifyErrorType("Could not find edits[1] in /path/to/file.ts. The oldText must match exactly including all whitespace and newlines.")).toBe("EDIT_MISMATCH");
+    // Non-unique edits — "Found N occurrences of edits[N]"
+    expect(classifyErrorType("Found 4 occurrences of edits[3] in /path/to/file.md. Each oldText must be unique.")).toBe("EDIT_MISMATCH");
+    expect(classifyErrorType("Found 2 occurrences of edits[0] in /path/to/file.ts. Please provide more context to make it unique.")).toBe("EDIT_MISMATCH");
   });
 
   it("picks the first matching category when multiple match", () => {

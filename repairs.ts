@@ -15,120 +15,16 @@
 
 import * as path from "node:path";
 
-// ─── Field Classification ────────────────────────────────────────────────
+// Re-export constants from sub-module for backward compatibility
+export { PATH_FIELD_NAMES, ARRAY_FIELD_NAMES, BOOLEAN_FIELD_NAMES,
+  CONTENT_FIELD_NAMES, NUMBER_FIELD_NAMES, FALSY_STRINGS,
+  TRUTHY_STRINGS, LONG_RUNNING_TOKENS
+} from "./repairs/constants.js";
 
-export const PATH_FIELD_NAMES = new Set([
-  "path",
-  "absolutePath",
-  "filePath",
-  "directory",
-  "cwd",
-  "target",
-  "dir",
-  "modulePath",
-]);
-
-export const ARRAY_FIELD_NAMES = new Set([
-  "edits",
-  "files",
-  "replacements",
-  "paths",
-  "function_names",
-  "functionNames",
-  "symbols",
-  "queries",
-  "urls",
-  "commands",
-  "steps",
-  "args",
-  "values",
-  "items",
-  "extensions",
-  "include",
-  "exclude",
-  "options",
-  "headers",
-  "tasks",
-  "patterns",
-  "names",
-  "ids",
-  "schemas",
-  "messages",
-  "prompts",
-  "parameters",
-  "responses",
-  "tools",
-  "skills",
-  "tags",
-  "categories",
-  "roles",
-  "permissions",
-]);
-
-export const BOOLEAN_FIELD_NAMES = new Set([
-  "strict",
-  "force",
-  "dry_run",
-  "dryRun",
-  "verbose",
-  "quiet",
-  "silent",
-  "debug",
-  "enabled",
-  "disabled",
-  "optional",
-  "required",
-  "recursive",
-  "followSymlinks",
-  "follow_symlinks",
-  "includeHidden",
-  "include_hidden",
-]);
-
-export const CONTENT_FIELD_NAMES = new Set([
-  "content",
-  "text",
-  "command",
-  "oldText",
-  "old_text",
-  "newText",
-  "new_text",
-  "code",
-  "source",
-  "data",
-  "body",
-  "message",
-  "description",
-  "instructions",
-  "prompt",
-  "summary",
-  "comment",
-  "note",
-]);
-
-export const NUMBER_FIELD_NAMES = new Set([
-  "offset",
-  "limit",
-  "timeout",
-  "timeout_seconds",
-  "concurrency",
-  "maxTokens",
-  "max_tokens",
-  "maxResults",
-  "max_results",
-  "numResults",
-  "num_results",
-  "start_line",
-  "end_line",
-  "port",
-  "ttl",
-  "context",
-  "maxDepth",
-  "maxFiles",
-  "retries",
-  "interval",
-]);
-
+import { PATH_FIELD_NAMES, ARRAY_FIELD_NAMES, BOOLEAN_FIELD_NAMES,
+  CONTENT_FIELD_NAMES, NUMBER_FIELD_NAMES, FALSY_STRINGS,
+  TRUTHY_STRINGS, LONG_RUNNING_TOKENS
+} from "./repairs/constants.js";
 // ─── Path Repair ──────────────────────────────────────────────────────────
 
 /**
@@ -334,6 +230,31 @@ function isArrayLike(key: string, lower: string): boolean {
   );
 }
 
+function isBooleanField(key: string, lower: string): boolean {
+  return (
+    BOOLEAN_FIELD_NAMES.has(key) ||
+    lower.startsWith("is_") ||
+    lower.startsWith("has_") ||
+    lower.startsWith("can_") ||
+    lower.endsWith("_flag")
+  );
+}
+
+/**
+ * Check if a field name suggests it should be a number.
+ * Named "looksLikeNumberField" to avoid conflict with the exported `isNumberField`.
+ */
+function looksLikeNumberField(key: string, lower: string): boolean {
+  return (
+    NUMBER_FIELD_NAMES.has(key) ||
+    lower.startsWith("max") ||
+    lower.startsWith("min") ||
+    lower.endsWith("_count") ||
+    lower.endsWith("_size") ||
+    lower.endsWith("_index")
+  );
+}
+
 /**
  * Classify a field and determine which repairs to apply.
  */
@@ -370,25 +291,12 @@ export function classifyField(
   }
 
   // Boolean fields that might receive string "true"/"false"/"yes"/"no"
-  if (
-    BOOLEAN_FIELD_NAMES.has(key) ||
-    lower.startsWith("is_") ||
-    lower.startsWith("has_") ||
-    lower.startsWith("can_") ||
-    lower.endsWith("_flag")
-  ) {
+  if (isBooleanField(key, lower)) {
     actions.push("coerce-boolean");
   }
 
   // Number fields that might receive string "42" instead of 42
-  if (
-    NUMBER_FIELD_NAMES.has(key) ||
-    lower.startsWith("max") ||
-    lower.startsWith("min") ||
-    lower.endsWith("_count") ||
-    lower.endsWith("_size") ||
-    lower.endsWith("_index")
-  ) {
+  if (looksLikeNumberField(key, lower)) {
     actions.push("coerce-number");
   }
 
@@ -457,24 +365,6 @@ export function trySplitStringToArray(value: unknown): unknown {
  * Based on research from canonize (stevekinney/canonize) and llm-tool-arg-coerce.
  * These cover the most common LLM outputs for boolean fields.
  */
-export const TRUTHY_STRINGS = new Set([
-  "true",
-  "yes",
-  "on",
-  "y",
-  "t",
-  "enabled",
-  "1",
-]);
-export const FALSY_STRINGS = new Set([
-  "false",
-  "no",
-  "off",
-  "n",
-  "f",
-  "disabled",
-  "0",
-]);
 
 /**
  * Coerce a string value to a boolean when the field suggests a boolean is expected.
@@ -607,29 +497,6 @@ export function formatDirectoryListing(
 }
 
 // ─── Path Validation Middleware ─────────────────────────────────────────────
-
-/**
- * Regex patterns for command tokens that suggest long-running operations.
- * Used for auto-timeout injection.
- */
-export const LONG_RUNNING_TOKENS = [
-  /build/i,
-  /test/i,
-  /lint/i,
-  /generate/i,
-  /deploy/i,
-  /install/i,
-  /compile/i,
-  /migrate/i,
-  /format/i,
-  /bundle/i,
-  /pack/i,
-  /watch/i,
-  /\bdev\b/i,
-  /run\s+(benchmark|bench)/i,
-  /\b(ci|pipeline)\b/i,
-  /\|\s+tee\b/i,
-];
 
 /**
  * Check if a bash command looks like a long-running operation
@@ -912,6 +779,116 @@ export function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
+// ─── Dispatch Handlers ────────────────────────────────────────────────────
+
+/**
+ * Unwrap markdown links in path values.
+ */
+function dispatchCleanPath(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const cleaned = cleanPathValue(value);
+  if (cleaned !== undefined && cleaned !== value) {
+    const msg = `${parentKey}.${key}: unwrapped markdown path "${String(value).slice(0, 40)}" → "${cleaned.slice(0, 40)}"`;
+    return [cleaned, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Parse JSON strings into structured values.
+ */
+function dispatchParseJson(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const parsed = tryParseJsonString(value);
+  if (parsed !== value) {
+    const preview = typeof value === "string" ? value.slice(0, 50) : String(value).slice(0, 50);
+    const msg = `${parentKey}.${key}: parsed JSON string "${preview}" → structured value`;
+    return [parsed, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Wrap a bare object in a single-element array.
+ */
+function dispatchWrapObjectAsArray(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const msg = `${parentKey}.${key}: wrapped object → single-element array`;
+    return [[value], msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Wrap non-array values as single-element arrays.
+ */
+function dispatchWrapArray(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const wrapped = wrapAsArrayIfNeeded(value);
+  if (wrapped !== value) {
+    const msg = `${parentKey}.${key}: wrapped bare "${String(value).slice(0, 30)}" → array`;
+    return [wrapped, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Split comma/space-separated strings into arrays.
+ */
+function dispatchSplitStringToArray(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const split = trySplitStringToArray(value);
+  if (split !== value && Array.isArray(split)) {
+    const msg = `${parentKey}.${key}: split string "${String(value).slice(0, 40)}" → array`;
+    return [split, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Coerce string values to boolean.
+ */
+function dispatchCoerceBoolean(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const coerced = coerceToBoolean(value);
+  if (coerced !== value) {
+    const msg = `${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`;
+    return [coerced, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Coerce string values to number.
+ */
+function dispatchCoerceNumber(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const coerced = coerceToNumber(value);
+  if (coerced !== value) {
+    const msg = `${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`;
+    return [coerced, msg];
+  }
+  return [value, null];
+}
+
+/**
+ * Strip extra properties from array items based on known schemas.
+ */
+function dispatchStripExtraProperties(value: unknown, key: string, parentKey: string): [unknown, string | null] {
+  const [cleaned, stripped] = stripExtraPropertiesFromItems(value, key);
+  if (cleaned !== value) {
+    const msg = `${parentKey}.${key}: stripped extra props [${stripped.join(", ")}] from array items`;
+    return [cleaned, msg];
+  }
+  return [value, null];
+}
+
+/** Lookup table mapping action names to dispatch handlers. */
+const repairDispatchers = {
+  "clean-path": dispatchCleanPath,
+  "parse-json": dispatchParseJson,
+  "wrap-object-as-array": dispatchWrapObjectAsArray,
+  "wrap-array": dispatchWrapArray,
+  "split-string-to-array": dispatchSplitStringToArray,
+  "coerce-boolean": dispatchCoerceBoolean,
+  "coerce-number": dispatchCoerceNumber,
+  "strip-extra-properties": dispatchStripExtraProperties,
+} as const;
+
 // ─── Object Field Repair ───────────────────────────────────────────────────
 
 
@@ -936,73 +913,12 @@ export function repairFieldValue(
 	const actions = classifyField(key, value);
 
 	for (const action of actions) {
-		switch (action) {
-			case "clean-path": {
-				const cleaned = cleanPathValue(value);
-				if (cleaned !== undefined && cleaned !== value) {
-					if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-						repairs.push(`${parentKey}.${key}: unwrapped markdown path "${String(value).slice(0, 40)}" → "${cleaned.slice(0, 40)}"`);
-					}
-					value = cleaned;
-				}
-				break;
-			}
-			case "parse-json": {
-				const parsed = tryParseJsonString(value);
-				if (parsed !== value) {
-					const preview =
-						typeof value === "string" ? value.slice(0, 50) : String(value).slice(0, 50);
-					repairs.push(`${parentKey}.${key}: parsed JSON string "${preview}" → structured value`);
-					value = parsed;
-				}
-				break;
-			}
-			case "wrap-object-as-array": {
-				if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-					repairs.push(`${parentKey}.${key}: wrapped object → single-element array`);
-					value = [value];
-				}
-				break;
-			}
-			case "wrap-array": {
-				const wrapped = wrapAsArrayIfNeeded(value);
-				if (wrapped !== value) {
-					repairs.push(`${parentKey}.${key}: wrapped bare "${String(value).slice(0, 30)}" → array`);
-					value = wrapped;
-				}
-				break;
-			}
-			case "split-string-to-array": {
-				const split = trySplitStringToArray(value);
-				if (split !== value && Array.isArray(split)) {
-					repairs.push(`${parentKey}.${key}: split string "${String(value).slice(0, 40)}" → array`);
-					value = split;
-				}
-				break;
-			}
-			case "coerce-boolean": {
-				const coerced = coerceToBoolean(value);
-				if (coerced !== value) {
-					repairs.push(`${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`);
-					value = coerced;
-				}
-				break;
-			}
-			case "coerce-number": {
-				const coerced = coerceToNumber(value);
-				if (coerced !== value) {
-					repairs.push(`${parentKey}.${key}: coerced "${String(value).slice(0, 30)}" → ${coerced}`);
-					value = coerced;
-				}
-				break;
-			}
-			case "strip-extra-properties": {
-				const [cleaned, stripped] = stripExtraPropertiesFromItems(value, key);
-				if (cleaned !== value) {
-					repairs.push(`${parentKey}.${key}: stripped extra props [${stripped.join(", ")}] from array items`);
-					value = cleaned;
-				}
-				break;
+		const handler = repairDispatchers[action as keyof typeof repairDispatchers];
+		if (handler) {
+			const [newValue, repairMsg] = handler(value, key, parentKey);
+			if (repairMsg) {
+				value = newValue;
+				repairs.push(repairMsg);
 			}
 		}
 	}
@@ -1173,4 +1089,108 @@ export function buildEnhancedEditMismatchGuidance(
 		`Note: line ${context.matchLine + 1} starts similarly to your oldText, but the exact`,
 		`text does not match. Read the file to see the full content before editing.`,
 	].join("\n");
+}
+
+/**
+ * Extract the non-unique occurrence count from an edit error message.
+ * Matches patterns like "Found 4 occurrences of edits[3] in ..."
+ */
+export function extractNonUniqueEditCount(errorMessage: string | null): number | undefined {
+  if (!errorMessage) return undefined;
+  // Match both "Found 4 occurrences" and "Found 1 occurrence"
+  const match = errorMessage.match(/Found (\d+) occurrences?/);
+  return match ? parseInt(match[1], 10) : undefined;
+}
+
+interface OldTextMatch {
+  lineNumbers: number[];
+  prefix: string;
+}
+
+/**
+ * Find all lines in a string that start with a given prefix.
+ * Used when edit.oldText matches multiple locations.
+ */
+export function findAllOldTextMatchLines(
+  content: string,
+  oldText: string
+): OldTextMatch | null {
+  if (!oldText || !content) return null;
+  // Use the first line of oldText as the prefix (trimmed)
+  const prefix = oldText.split("\n")[0].trim();
+  if (!prefix) return null;
+  const lines = content.split("\n");
+  const lineNumbers: number[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(prefix)) {
+      lineNumbers.push(i);
+    }
+  }
+
+  if (lineNumbers.length === 0) return null;
+  return { lineNumbers, prefix };
+}
+
+/**
+ * Build guidance for when an edit.oldText matches multiple locations.
+ */
+export function buildEditNonUniqueGuidance(
+  content: string,
+  oldText: string,
+  matchCount: number
+): string | null {
+  const result = findAllOldTextMatchLines(content, oldText);
+  if (!result) return null;
+
+  const firstLine = oldText.split("\n")[0].trim();
+  const lines = content.split("\n");
+  const prefix = firstLine;
+
+  return [
+    `Note: oldText matched ${matchCount} time(s) in the file. Try to add more context surrounding your edit to make oldText unique.`,
+    "",
+    `Prefix: "${prefix}"`,
+    "Matching locations:",
+    ...result.lineNumbers.map((ln, i) => {
+      const start = Math.max(0, ln - 1);
+      const end = Math.min(lines.length, ln + 2);
+      const snippet = lines.slice(start, end).join("\n");
+      return `  ${i + 1}. → (line ${ln + 1}):\n${snippet}`;
+    }),
+    "",
+    `Recommended: add more surrounding context to your oldText so it matches only one location.`,
+    "",
+    "Tips to make your oldText unique:",
+    "  • Include the line BEFORE and AFTER your edit target",
+    "  • Use more lines of context",
+    "  • Include indentation exactly as it appears in the file",
+  ].join("\n");
+}
+
+/**
+ * Build guidance suggesting an edit might target the wrong file.
+ * @param errorPath The path from the error message
+ * @param inputPath Optional path the user specified in the input
+ */
+export function buildEditWrongFileGuidance(errorPath: string, inputPath?: string): string {
+  const lines: string[] = [
+    `Note: The edit to "${errorPath}" appears to target a DIFFERENT file.`,
+    "Your oldText matches content in another file, not the one you specified.",
+    "",
+    "Possible causes:",
+    "  1. You're editing the wrong file — re-read the file to verify",
+    "  2. File content changed — re-read the file",
+    "  3. Whitespace mismatch — check indentation and trailing spaces",
+    "",
+    "Possible fixes:",
+    "  1. Change the path to point to the correct file",
+    "  2. split into separate edit calls for each file",
+  ];
+
+  if (inputPath && inputPath !== errorPath) {
+    lines.push(`  3. These differ: error path "${errorPath}" vs input path "${inputPath}" — verify you are editing the intended file`);
+  }
+
+  return lines.join("\n");
 }
