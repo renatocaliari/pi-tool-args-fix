@@ -6,6 +6,58 @@
 
 import { isEisdirError } from "../repairs.js";
 
+// ─── Schema Error Translation ────────────────────────────────────────────
+
+/**
+ * Translate a JSON Schema validation error into LLM-friendly language.
+ *
+ * Raw schema errors use JSON Pointer paths ("edits.0.oldText") which are
+ * optimized for developer debugging, not for AI self-correction.
+ * This function rewrites common patterns into plain instructions.
+ *
+ * Returns null if no translation rule applies (let the raw error through).
+ */
+export function translateSchemaValidationError(errorText: string): string | null {
+	if (!errorText) return null;
+
+	const lower = errorText.toLowerCase();
+
+	// Pattern: "edits.0.oldText: must have required properties oldText, newText"
+	// The schema says edits[0] IS an object that needs oldText+newText, but the model sent {}
+	// JSON Pointer path "edits.0.oldText" suggests edits[0] has .oldText — confusing.
+	if (lower.includes("must have required properties")) {
+		// Extract the field path (before colon) and the missing property names (after colon)
+		const colonIdx = errorText.indexOf(":");
+		if (colonIdx !== -1) {
+			const pointerPath = errorText.slice(0, colonIdx).trim();
+			// Convert "edits.0.oldText" → "edits[0]" (strip trailing property name)
+			const arrayMatch = pointerPath.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\.(\d+)\.([a-zA-Z_$][a-zA-Z0-9_$]*)$/);
+			if (arrayMatch) {
+				const [, arrayName, index] = arrayMatch;
+				const missing = errorText.slice(colonIdx + 1).trim();
+				return `${arrayName}[${index}] is missing required fields: ${missing}`;
+			}
+			// Simple path like "path" or "edits" — just "<field> is missing"
+			const simpleMatch = pointerPath.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*$/);
+			if (simpleMatch) {
+				const missing = errorText.slice(colonIdx + 1).trim();
+				return `Missing required argument: "${pointerPath}" (${missing})`;
+			}
+		}
+	}
+
+	// Pattern: "path: must have required properties path"
+	// The root object has a property "path" that is itself required — but the model
+	// omitted the entire argument. The "path: must have required properties path"
+	// message is circular/confusing.
+	if (lower.includes("must have required properties")) {
+		return null; // fall through to generic guidance
+	}
+
+	return null;
+}
+
+
 // ─── Blindspot Suggestions ───────────────────────────────────────────────
 
 /** Blindspot suggestions mapped by category. */
@@ -56,7 +108,7 @@ export function classifyErrorType(errorText: string | null): string | null {
   // Edit text mismatch — model tried to replace text that doesn't match, is identical, or is non-unique
   if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match") || lower.includes("replacement produced identical content") || lower.includes("no changes made to") || lower.includes("occurrences of the text") || (lower.includes("found ") && lower.includes(" occurrences of edits["))) return "EDIT_MISMATCH";
   // Schema validation errors — model sent arguments that violate the tool's JSON schema
-  if (lower.includes("validation failed") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
+  if (lower.includes("validation failed") || lower.includes("must have required properties") || lower.includes("must not have more than") || lower.includes("must not have fewer than") || lower.includes("must have less than") || lower.includes("must have more than") || lower.includes("must be one of") || lower.includes("must match")) return "SCHEMA_VALIDATION";
   // HTTP status codes in error text
   const httpMatch = lower.match(/\b([45]\d{2})\b/);
   if (httpMatch) return `HTTP_${httpMatch[1]}`;
@@ -168,15 +220,15 @@ export function getErrorGuidance(category: string, _toolName?: string): string |
   switch (category) {
     case "SCHEMA_VALIDATION":
       return (
-        `The tool rejected the arguments due to a schema validation error. This is a permanent error — retrying the same arguments will not help.` +
+        `The tool rejected the arguments due to a schema validation error.` +
         `\nPossible causes:` +
-        `\n  - Required field missing from the arguments` +
-        `\n  - Field value exceeds maximum length constraints` +
-        `\n  - Invalid enum value (not in the allowed list)` +
-        `\n  - Wrong data type for a field (expected string, got number)` +
-        `\n  - Unexpected extra field not in the tool's definition` +
-        `\nTo fix: review the tool's parameter requirements and ensure every argument is valid.` +
-        `\nTip: remove any extra fields not explicitly required by the tool definition.`
+        `\n  1. A required field is missing — add it with the correct value` +
+        `\n  2. A field value exceeds maximum length — truncate or shorten it` +
+        `\n  3. Invalid enum value — pick one from the allowed list` +
+        `\n  4. Wrong data type — use the expected type (e.g. string, not number)` +
+        `\n  5. Unexpected extra field — remove fields not in the tool definition` +
+        `\nTo fix: review each argument against the tool's parameter requirements.` +
+        `\nTip: remove any optional fields you're unsure about — send only what's required.`
       );
     default:
       return null;

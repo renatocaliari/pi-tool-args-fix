@@ -73,6 +73,7 @@ import {
 	ConsecutiveFailureTracker,
 	getToolHelp,
 	getErrorGuidance,
+	translateSchemaValidationError,
 } from "./recorder.js";
 import { exec } from "node:child_process";
 import type { RepairEvent } from "./recorder.js";
@@ -735,6 +736,15 @@ pi.on("tool_result", async (event, ctx) => {
 				const errorText = extractTextContent(event.content) ?? "";
 				const enhanced = await enhanceEditMismatchGuidance(event, guidanceText, errorText);
 				if (enhanced) guidanceText = enhanced;
+			}
+
+			// SCHEMA_VALIDATION: translate JSON Pointer paths to LLM-friendly language
+			if (err.executionErrorType === "SCHEMA_VALIDATION") {
+				const errorText = extractTextContent(event.content) ?? "";
+				const translated = translateSchemaValidationError(errorText);
+				if (translated) {
+					guidanceText = `❗ ${translated}\n\n${guidanceText}`;
+				}
 			}
 
 			if (guidanceText) {

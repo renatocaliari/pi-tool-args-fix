@@ -8,6 +8,7 @@ import {
   getSuggestion,
   getToolHelp,
   getErrorGuidance,
+  translateSchemaValidationError,
 } from "./classifier.js";
 
 // ─── classifyErrorType ────────────────────────────────────────────────
@@ -194,9 +195,8 @@ describe("getToolHelp", () => {
   describe("getErrorGuidance", () => {
     it("returns SCHEMA_VALIDATION guidance with actionable advice", () => {
       const g = getErrorGuidance("SCHEMA_VALIDATION");
-      expect(g).toContain("permanent error");
-      expect(g).toContain("Required field missing");
-      expect(g).toContain("enum value");
+      expect(g).toContain("required field is missing");
+      expect(g).toContain("Invalid enum value");
       expect(g).toContain("argument");
     });
 
@@ -210,4 +210,37 @@ describe("getToolHelp", () => {
       expect(getErrorGuidance("")).toBeNull();
     });
   });
+
+// ─── translateSchemaValidationError ────────────────────────────────────
+
+describe("translateSchemaValidationError", () => {
+  it("translates edits[N] missing fields error", () => {
+    const err = "edits.0.oldText: must have required properties oldText, newText";
+    expect(translateSchemaValidationError(err)).toBe(
+      'edits[0] is missing required fields: must have required properties oldText, newText',
+    );
+  });
+
+  it("translates missing required root path argument", () => {
+    const err = "path: must have required properties path";
+    const result = translateSchemaValidationError(err);
+    expect(result).toBe('Missing required argument: "path" (must have required properties path)');
+  });
+
+  it("translates missing required edits argument", () => {
+    const err = "edits: must have required properties edits";
+    const result = translateSchemaValidationError(err);
+    expect(result).toBe('Missing required argument: "edits" (must have required properties edits)');
+  });
+
+  it("returns null for non-schema errors", () => {
+    expect(translateSchemaValidationError("EISDIR: illegal operation on a directory, read")).toBeNull();
+    expect(translateSchemaValidationError("ENOENT: no such file or directory")).toBeNull();
+  });
+
+  it("returns null for null/empty input", () => {
+    expect(translateSchemaValidationError(null)).toBeNull();
+    expect(translateSchemaValidationError("")).toBeNull();
+  });
+});
 });
