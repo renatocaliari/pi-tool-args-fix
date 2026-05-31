@@ -161,7 +161,12 @@ describe("getToolHelp", () => {
 
   it("returns generic guidance for unknown tools", () => {
     const help = getToolHelp("rsync");
-    expect(help).toContain("Consider checking");
+    expect(help).toContain("Generic guidance");
+    expect(help).toContain("Possible causes");
+    expect(help).toContain("To debug");
+    expect(help).toContain("--help");
+    expect(help).toContain("\"--help\"");
+    expect(help).toContain("Do NOT keep retrying");
   });
 
   describe("getErrorGuidance", () => {

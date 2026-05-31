@@ -47,9 +47,15 @@ import {
 	extractPathsFromArgs,
 	suggestAutoTimeout,
 	ContentHashCache,
-	simpleHash,
 	buildEditMismatchContext,
 	buildEnhancedEditMismatchGuidance,
+	extractFailedEditIndex,
+	extractFailedEditPath,
+	buildStalenessGuidance,
+	buildEditLoopGuidance,
+	buildCircuitBreakMessage,
+	buildPathValidationGuidance,
+	resolvePath,
 } from "./repairs.js";
 import { createStats, recordRepairs, formatStats, RepairToggle } from "./stats.js";
 import {
@@ -72,8 +78,13 @@ import type { LLMConfig, PhaseCallback, IssueContent } from "./suggest-repairs.j
 
 /** Pi built-in CLI tools that use shell exit codes (may have exit code 1 = "no results" not an error). */
 const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
-/** Tools that get guidance injection on consecutive failures (includes CLI + edit/read/write). */
-const GUIDANCE_TOOLS = new Set([...NATIVE_CLI_TOOLS, "edit", "read", "write"]);
+/**
+ * ALL tools get guidance injection on every failure.
+ * No hardcoded whitelist — every tool benefits from contextual help
+ * on the very first failure, including extension tools (agent_browser,
+ * web_search, etc.). The guidance is always generic (parameter/usage
+ * advice), never extension-specific naming.
+ */
 
 /** Track which (toolName:errorType) pairs have already received error-type guidance. */
 const guidedErrorPairs = new Set<string>();
@@ -224,17 +235,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (invalidPaths.length > 0 && event.toolName !== "bash") {
 				// For file tools: return tool error with guidance before execution
-				const pathList = invalidPaths.map(p => `  - ${p}`).join("\n");
-				const guidance = [
-					`⚠️ Path validation: ${invalidPaths.length} path(s) not found.`,
-					pathList,
-					"",
-					"Possible fixes:",
-					"  • Check the file path spelling",
-					"  • The file may be in a different directory",
-					"  • You may need to create the file first (use write tool)",
-					"  • Use fffind or ls to discover the correct path",
-				].join("\n");
+				const guidance = buildPathValidationGuidance(invalidPaths, event.toolName);
 
 				console.error(`[repair-layer] tool_call_blocked:${event.toolName} - ${invalidPaths.length} invalid paths`);
 
@@ -282,18 +283,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (editPath) {
-				const resolved = editPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", editPath.slice(2)) : editPath;
+				const resolved = resolvePath(editPath, process.env.HOME);
 				try {
 					const content = await fs.readFile(resolved, "utf-8");
 					if (contentHashCache.isStale(resolved, content)) {
 						const lastTurn = contentHashCache.getLastReadTurn(resolved);
-						const staleGuidance = [
-							`⚠️ File content has changed since it was last read (turn ${lastTurn}).`,
-							`The edit may overwrite newer content or the oldText no longer matches.`,
-							`Please re-read the file first with the read tool to get current content,`,
-							`then apply the edit with the exact current text as oldText.`,
-						].join("\n");
-
+						const staleGuidance = buildStalenessGuidance(lastTurn);
 						console.error(`[repair-layer] tool_call_blocked:${event.toolName} - stale content for ${resolved}`);
 
 						eventSeq++;
@@ -403,7 +398,7 @@ export default function (pi: ExtensionAPI) {
 //
 // Handler phases:
 //   1. Classify error (pattern matching + CLI filter + safety net)
-//   1.b Track consecutive failures + inject CLI guidance on 2nd+
+//   1.b Track consecutive failures + inject CLI guidance on every failure
 //   1.c Detect empty results (analytics only)
 //   2. Handle EISDIR directory fallback (read / read_file)
 //   3. Record event to JSONL
@@ -490,18 +485,35 @@ function buildToolResultEvent(
 async function enhanceEditMismatchGuidance(
 	event: any,
 	baseGuidance: string,
+	errorText: string,
 ): Promise<string | null> {
-	let filePath: string | undefined;
-	if (event.input?.path) {
-		filePath = event.input.path;
-	} else if (event.input?.files?.[0]?.path) {
-		filePath = event.input.files[0].path;
+	// Extract file path from error text first (most reliable for edits[N] errors)
+	let filePath: string | undefined = extractFailedEditPath(errorText);
+	// Fall back to input path
+	if (!filePath) {
+		if (event.input?.path) {
+			filePath = event.input.path;
+		} else if (event.input?.files?.[0]?.path) {
+			filePath = event.input.files[0].path;
+		}
 	}
 	if (!filePath) return null;
 
 	const resolved = resolvePath(filePath, process.env.HOME);
 
-	const oldText = event.input?.oldText ?? event.input?.edits?.[0]?.oldText;
+	// Extract which edit index failed
+	let oldText: string | undefined;
+	const failedIndex = extractFailedEditIndex(errorText);
+	if (failedIndex !== undefined) {
+		// Use the correct edits[N] index
+		const edits = event.input?.edits as Array<{ oldText?: string }> | undefined;
+		if (edits && edits[failedIndex] && typeof edits[failedIndex].oldText === "string") {
+			oldText = edits[failedIndex].oldText;
+		}
+	} else {
+		// Fall back to oldText or edits[0] (non-indexed error, e.g. single edit)
+		oldText = event.input?.oldText ?? event.input?.edits?.[0]?.oldText;
+	}
 	if (typeof oldText !== "string" || !oldText) return null;
 
 	try {
@@ -510,6 +522,20 @@ async function enhanceEditMismatchGuidance(
 		if (!ctx) return null;
 		return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
 	} catch {
+		// Error path failed (e.g. relative path from error text).
+		// Try the input path as fallback (usually the absolute path).
+		const fallbackPath = event.input?.path;
+		if (fallbackPath && typeof fallbackPath === "string" && fallbackPath !== filePath) {
+			const resolvedFallback = resolvePath(fallbackPath, process.env.HOME);
+			try {
+				const fileContent = await fs.readFile(resolvedFallback, "utf-8");
+				const ctx = buildEditMismatchContext(fileContent, oldText);
+				if (!ctx) return null;
+				return buildEnhancedEditMismatchGuidance(baseGuidance, ctx);
+			} catch {
+				return null;
+			}
+		}
 		return null;
 	}
 }
@@ -535,41 +561,27 @@ function trackAndInterceptFailures(
 			err.blindspotCategory = "CONSECUTIVE_LOOP";
 		}
 
-		// Guidance: native tools on 2nd+ consecutive failure
-		if (consecutiveCount >= 2 && GUIDANCE_TOOLS.has(event.toolName)) {
+		// Guidance: ALL tools get help on every failure
+		// Includes extension tools too — getToolHelp only gives generic usage advice.
+		// On first failure the generic guidance helps the model self-correct without
+		// burning extra rounds on blind retries.
+		if (consecutiveCount >= 1) {
 			const currentText = extractTextContent(event.content) ?? "";
 			let helpText = getToolHelp(event.toolName);
 
 			// Enhanced guidance for edit_file loops — more specific than generic help
 			if (event.toolName === "edit" || event.toolName === "edit_file") {
 				if (consecutiveCount >= 5) {
-					helpText += `\n\n⚠️ This is attempt #${consecutiveCount} to edit the same file with the same arguments.` +
-						`\nThe edit is clearly not matching the current file content.` +
-						`\nConsider an alternative approach:` +
-						`\n  • Read the file first with the read tool, then re-apply the edit with exact text` +
-						`\n  • Use the write tool to write the entire file content (if you know the full content)` +
-						`\n  • Create a new file instead of modifying an existing one`;
+					helpText += "\n\n" + buildEditLoopGuidance(consecutiveCount);
 				} else if (consecutiveCount >= 3) {
-					helpText += `\n\n💡 Tip: ${consecutiveCount} consecutive failures on this file. ` +
-						`The oldText may have whitespace differences (tabs vs spaces, trailing spaces). ` +
-						`Read the file and check indentation carefully.`;
+					helpText += "\n\n" + buildEditLoopGuidance(consecutiveCount);
 				}
 			}
 
 			// Circuit-break: 7+ consecutive failures → permanent error
 			// Forces the model to abandon this approach entirely
 			if (consecutiveCount >= 7) {
-				const circuitBreakMsg = [
-					`🔴 CIRCUIT BREAKER: Tool "${event.toolName}" has failed ${consecutiveCount} consecutive times.`,
-					`The current approach is not working and further retries will not help.`,
-					`Please switch to a completely different strategy:`,
-					`  • If editing: use the write tool to create a new version of the file`,
-					`  • If reading: verify the path exists (use ls or fffind)`,
-					`  • If running a command: simplify the command or check syntax`,
-					`  • Move on to a different task entirely`,
-					``,
-					`Error details: ${currentText.slice(0, 200)}`,
-				].join("\n");
+				const circuitBreakMsg = buildCircuitBreakMessage(event.toolName, consecutiveCount, currentText);
 
 				console.error(`[repair-layer] tool_result_circuit_break:${event.toolName} - ${consecutiveCount} consecutive failures`);
 
@@ -678,7 +690,8 @@ pi.on("tool_result", async (event, ctx) => {
 
 			// Enhanced EDIT_MISMATCH: try to read file and offer context
 			if (err.executionErrorType === "EDIT_MISMATCH" && !err.blindspotCategory) {
-				const enhanced = await enhanceEditMismatchGuidance(event, guidanceText);
+				const errorText = extractTextContent(event.content) ?? "";
+				const enhanced = await enhanceEditMismatchGuidance(event, guidanceText, errorText);
 				if (enhanced) guidanceText = enhanced;
 			}
 

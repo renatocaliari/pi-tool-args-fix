@@ -175,10 +175,9 @@ export function cleanPathValue(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   let cleaned = value.trim();
   cleaned = unwrapMarkdownLink(cleaned);
-  // Resolve relative paths to absolute (common LLM mistake: ~/ paths)
-  if (cleaned.startsWith("~/")) {
-    const home = process.env.HOME || process.env.USERPROFILE || "/home/user";
-    cleaned = path.join(home, cleaned.slice(2));
+  // Resolve ~/ paths (common LLM mistake) using shared resolvePath
+  if (cleaned.startsWith("~")) {
+    cleaned = resolvePath(cleaned);
   }
   return cleaned;
 }
@@ -861,6 +860,11 @@ export class ContentHashCache {
   /** path → turn index when last read */
   private readTurns = new Map<string, number>();
 
+  /** Check if a file has ever been read in this session. */
+  wasEverRead(filePath: string): boolean {
+    return this.readTurns.has(filePath);
+  }
+
   /** Set the current hash for a file path. */
   setHash(filePath: string, content: string): void {
     this.hashes.set(filePath, simpleHash(content));
@@ -1096,10 +1100,38 @@ export function repairObjectFieldsWithTrace(
 }
 
 /**
- * Enhanced EDIT_MISMATCH text context: pure function that finds lines in
- * fileContent that start similarly to oldText and returns annotated context.
- * Returns null if no reasonable match is found (oldText too short, no prefix match).
+ * Extract the edit index from an EDIT_MISMATCH error text.
+ * Returns undefined if the error is not about a specific edit index
+ * (e.g., it's about "the exact text" for single-edits without an array).
  */
+export function extractFailedEditIndex(errorText: string): number | undefined {
+	if (!errorText) return undefined;
+	const match = errorText.match(/edits\[(\d+)\]/);
+	if (match) {
+		return parseInt(match[1], 10);
+	}
+	return undefined;
+}
+
+/**
+ * Extract the file path from an EDIT_MISMATCH error text.
+ * Returns undefined if no path is found.
+ */
+export function extractFailedEditPath(errorText: string): string | undefined {
+	if (!errorText) return undefined;
+	// Match capture after "in ": greedy \S+ grabs all non-whitespace,
+	// then we strip trailing dot if present (sentence separator, not part of path)
+	const match = errorText.match(/in\s+(\S+)/);
+	if (match) {
+		let p = match[1];
+		// Remove trailing quotes that appeared in truncated test strings
+		if (p.endsWith('"')) p = p.slice(0, -1);
+		// Remove trailing dot followed by space or end (sentence separator)
+		if (p.endsWith('.')) p = p.slice(0, -1);
+		return p;
+	}
+	return undefined;
+}
 export function buildEditMismatchContext(
 	fileContent: string,
 	oldText: string,

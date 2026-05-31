@@ -69,7 +69,25 @@ export function classifyErrorType(errorText: string | null): string | null {
  * error, the model gets structured guidance on how to use the tool.
  */
 export function getToolHelp(toolName: string, failedCommand?: string): string {
-  const common = "Consider checking the command syntax, file paths, and permissions.";
+  const common =
+    `The "${toolName}" tool failed. Generic guidance for any tool:` +
+    `\n` +
+    `\nPossible causes:` +
+    `\n  - Invalid parameter names or types (check the tool\'s schema and available parameters)` +
+    `\n  - Wrong argument format, value, or data type for a parameter` +
+    `\n  - The tool\'s preconditions are not met (file not found, service unavailable, missing dependency)` +
+    `\n  - The model passed parameters the tool does not accept (extra/unexpected fields)` +
+    `\n` +
+    `\nTo debug:` +
+    `\n  1. Read the error message carefully — it often says exactly what went wrong` +
+    `\n  2. Check parameter names: use exactly what the tool definition says, not synonyms` +
+    `\n  3. Simplify: call the tool with the minimum required parameters first` +
+    `\n  4. Try running the tool with --help:` +
+    `\n     { "args": ["--help"] } for extension tools, or "toolname --help" for CLI tools` +
+    `\n  5. If the error says something specific (\"Element not found\", \"invalid flag\", etc.),` +
+    `\n     address that exact issue — don\'t retry blindly with the same arguments` +
+    `\n` +
+    `\nDo NOT keep retrying the same failing pattern. Change the approach.`;
 
   switch (toolName) {
     case "bash":

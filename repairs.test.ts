@@ -48,6 +48,8 @@ import {
   buildEditLoopGuidance,
   buildEditMismatchContext,
   buildEnhancedEditMismatchGuidance,
+  extractFailedEditIndex,
+  extractFailedEditPath,
   REPAIRABLE_TOOLS,
   ENOENT_TOOLS,
 } from "./repairs.js";
@@ -103,6 +105,12 @@ describe("cleanPathValue", () => {
   it("returns undefined for non-strings", () => {
     expect(cleanPathValue(42)).toBeUndefined();
     expect(cleanPathValue(null)).toBeUndefined();
+  });
+
+  it("resolves ~ paths without trailing slash", () => {
+    const result = cleanPathValue("~/notes.md");
+    expect(result).toContain("notes.md");
+    expect(result).not.toContain("~~");
   });
 });
 
@@ -1338,3 +1346,84 @@ describe("buildEnhancedEditMismatchGuidance", () => {
     expect(result).toContain("```");
   });
 });
+
+describe("extractFailedEditIndex", () => {
+  it("extracts edits[0] index", () => {
+    expect(extractFailedEditIndex("Could not find edits[0] in /path/to/file.ts")).toBe(0);
+  });
+
+  it("extracts edits[2] index", () => {
+    expect(extractFailedEditIndex("Could not find edits[2] in setup.sh. The oldText must match exactly including all whitespace and newlines.")).toBe(2);
+  });
+
+  it("extracts edits[5] index", () => {
+    expect(extractFailedEditIndex("Could not find edits[5] in /x/y.ts")).toBe(5);
+  });
+
+  it("returns undefined for non-array edit errors", () => {
+    expect(extractFailedEditIndex("Could not find the exact text in /path/file.ts")).toBeUndefined();
+  });
+
+  it("returns undefined for null input", () => {
+    expect(extractFailedEditIndex(null)).toBeUndefined();
+  });
+
+  it("returns undefined for unrelated error text", () => {
+    expect(extractFailedEditIndex("File not found")).toBeUndefined();
+  });
+
+  it("extracts double-digit edit index", () => {
+    expect(extractFailedEditIndex("Could not find edits[12] in /long/path.ts")).toBe(12);
+  });
+});
+
+describe("extractFailedEditPath", () => {
+  it("extracts path from edits error", () => {
+    expect(extractFailedEditPath("Could not find edits[2] in setup.sh. The oldText")).toBe("setup.sh");
+  });
+
+  it("extracts path from single edit error", () => {
+    expect(extractFailedEditPath("Could not find the exact text in /path/to/file.ts. The old text")).toBe("/path/to/file.ts");
+  });
+
+  it("handles paths with dots", () => {
+    expect(extractFailedEditPath("Could not find edits[0] in /x/y.z.ts")).toBe("/x/y.z.ts");
+  });
+
+  it("extracts bare relative path from exact-text error", () => {
+    expect(extractFailedEditPath("Could not find the exact text in repairs.test.ts. The old text must match exactly including all whitespace and newlines.")).toBe("repairs.test.ts");
+  });
+
+  it("returns undefined for null", () => {
+    expect(extractFailedEditPath(null)).toBeUndefined();
+  });
+
+  it("returns undefined for unrelated text", () => {
+    expect(extractFailedEditPath("file not found")).toBeUndefined();
+  });
+
+  it("handles empty-string input gracefully", () => {
+    expect(extractFailedEditPath("")).toBeUndefined();
+  });
+});
+
+describe("ContentHashCache.wasEverRead", () => {
+  it("returns true for a file that was read", () => {
+    const cache = new ContentHashCache();
+    cache.recordRead("/path/to/file.ts", 10);
+    expect(cache.wasEverRead("/path/to/file.ts")).toBe(true);
+  });
+
+  it("returns false for a file never read", () => {
+    const cache = new ContentHashCache();
+    expect(cache.wasEverRead("/path/to/unknown.ts")).toBe(false);
+  });
+
+  it("returns false after reset", () => {
+    const cache = new ContentHashCache();
+    cache.recordRead("/path/to/file.ts", 5);
+    cache.reset();
+    expect(cache.wasEverRead("/path/to/file.ts")).toBe(false);
+  });
+});
+

@@ -1,61 +1,67 @@
-# pi-tool-repair-layer
+# Agent Guidelines
 
-pi extension that intercepts tool_call events and fixes common LLM argument mistakes before tools execute.
+<!-- Do not restructure or delete sections. Update individual values in-place when they change. -->
+
+## Core Principles
+
+- **Keep this file under 30 lines of instructions.** Every line competes for the agent's limited context budget (~150-200 total).
+- **Only repair primary/builtin tools.** Never add repairs specific to external extension CLI agents (e.g., `agent_browser`, `web_search`, `fetch_content`). Extension tools get generic guidance via `getToolHelp` on every failure — no field-level or arg-level fixes.
+- **Validate-then-repair.** Pure repair functions only fix structural arg issues (types, nulls, arrays), never content fields (`command`, `code`, `oldText`, `newText`).
+- **No external runtime dependencies.** TypeScript + Vitest only.
+
+---
+
+## Project Overview
+
+**Project type:** pi coding-agent extension  
+**Primary language:** TypeScript (strict)  
+**Key dependencies:** Vitest (testing only)
+
+---
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `npm test` | Run all 209 tests (Vitest) |
+| `npm test` | Run all tests (Vitest) |
 | `npx vitest run` | Run tests once |
 | `npx vitest --watch` | Watch mode |
+
+---
+
+## Code Conventions
+
+- Follow existing patterns in the codebase
+- KISS, DRY, pure functions preferred
+- Delete dead code immediately
+- All code, identifiers: English
+
+---
 
 ## Architecture
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `index.ts` | ~917 | Extension entry: 2 handlers + 4 commands + 8 sub-functions |
-| `repairs.ts` | ~540 | Pure repair functions (field-level arg fixes) |
+| `index.ts` | ~917 | Extension entry: tool_call + tool_result handlers |
+| `repairs.ts` | ~540 | Pure field-level repair functions |
 | `recorder.ts` | ~545 | JSONL persistence, aggregation, blindspot analysis |
-| `recorder/classifier.ts` | ~115 | Error classification + CLI help text |
+| `recorder/classifier.ts` | ~115 | Error classification + `getToolHelp` (generic guidance for ALL tools) |
 | `recorder/tracker.ts` | ~70 | Consecutive failure loop detection |
 | `stats.ts` | ~115 | In-memory session stats |
-| `suggest-repairs.ts` | ~742 | LLM repair suggestion engine (blindspot analysis, critical recommendation, GitHub Issue composition) |
-| `recorder.test.ts` | ~545 | 41 I/O + analysis + formatting tests |
-| `recorder/classifier.test.ts` | ~140 | 21 classifier/grep/help tests |
-| `recorder/tracker.test.ts` | ~75 | 8 loop detection tests |
-| `repairs.test.ts` | ~640 | 88 tests for repair functions |
-| `stats.test.ts` | ~215 | 23 tests for stats module |
-| `suggest-repairs.test.ts` | ~175 | 17 tests for suggestion engine (unit + formatting + recommendation + issue) |
+| `suggest-repairs.ts` | ~742 | LLM repair suggestion engine (blindspot analysis, GitHub Issue composition) |
 
-## Key Concepts
+### Key Behavior
 
-- **Repairs**: field-level fixes (validate-then-repair, content fields NEVER touched)
-- **/repair-suggest workflow**: gather data → confirm → generate suggestions → LLM composes GitHub Issue (title + body with code hints) → opens pre-filled New Issue page in browser → user reviews and submits
-- **auto-evolution**: every user who submits an Issue contributes patterns/corrections back to the repo — no API token, no GitHub integration
-- **Zero-token GitHub flow**: uses `github.com/owner/repo/issues/new?title=...&body=...&labels=suggestion` query params — no API key needed
-- **Issue template**: composed by user's own LLM with context (error patterns, frequency, correction code) but no sensitive session data
-- **Recorder**: JSONL event logging per session at `.pi/repair-log/`, retention 50 sessions
-- **Blindspots**: error patterns without repair coverage (via `computeBlindspots`)
-- **Loop detection**: `ConsecutiveFailureTracker` marks 3+ consecutive failures as `CONSECUTIVE_LOOP`
-- **CLI guidance**: intercepts 2nd+ consecutive CLI failure with contextual `--help` docs
-- **Error classification**: `classifyErrorType()` — pure pattern matching, no tool name dependency
+- **Guidance injection fires for EVERY tool on every failure** — no hardcoded whitelist, no wait for repeated failure. Falls back to generic help for unknown/extension tools.
+- **Circuit breaker** at 7+ consecutive failures forces strategy change.
+- **Error classification** is pure pattern matching — no tool name dependency.
+- **auto-evolution**: users submit Issues with correction patterns via zero-token GitHub Issue links.
 
-## Naming
+---
 
-- All code, identifiers: **English**
-- Extension commands: `/repair-on`, `/repair-off`, `/repair-toggle`, `/repair-stats-session`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
-- git branches: standard (main)
+## Maintenance Notes
 
-## Tech Stack
-
-- TypeScript (strict)
-- Vitest (testing)
-- No external runtime deps
-
-## Don'ts
-
-- Never add external dependencies without asking
-- Never touch content fields (command, code, oldText, newText, code, etc.)
-- Never put secrets in AGENTS.md
-- Never use global mutable state
+- Review AGENTS.md when architecture changes
+- Update commands when workflows change
+- Keep under 30 lines — move detail to separate docs if needed
+- Delete anything the agent can infer from code
