@@ -56,6 +56,7 @@ import {
 	extractNonUniqueEditCount,
 	buildStalenessGuidance,
 	buildEditLoopGuidance,
+	buildSequentialEditGuidance,
 	buildCircuitBreakMessage,
 	buildPathValidationGuidance,
 	resolvePath,
@@ -92,6 +93,17 @@ const NATIVE_CLI_TOOLS = new Set(["bash", "grep", "find", "ls"]);
 
 /** Track which (toolName:errorType) pairs have already received error-type guidance. */
 const guidedErrorPairs = new Set<string>();
+
+/**
+ * Track last edit state per file for sequential edit overlap detection.
+ * key = resolved path, value = { oldText, edits, firstLine }
+ */
+interface LastEditState {
+  oldText: string;
+  edits: number; // count of edits[] items
+  firstLine: string;
+}
+const lastEditPerFile = new Map<string, LastEditState>();
 
 
 
@@ -327,6 +339,60 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// ── Step 3d: Sequential edit overlap detection ───────────
+		if (event.toolName === "edit" && editPath) {
+			const prev = lastEditPerFile.get(editPath);
+			if (prev) {
+				const edits = (event.input as Record<string, unknown>)?.edits as Array<Record<string, unknown>> | undefined;
+				if (edits && edits.length > 0) {
+					const currentOldText = edits[0]?.oldText as string | undefined;
+					if (currentOldText) {
+						const currentFirstLine = currentOldText.split("\n")[0]!;
+						// Only warn if overlapping region: same first line or oldText is same
+						if (prev.firstLine === currentFirstLine || prev.oldText === currentOldText) {
+							const matchCount = stats.sequentials || 0;
+							stats.sequentials = matchCount + 1;
+
+							const guidance = buildSequentialEditGuidance(
+								prev.firstLine,
+								currentFirstLine,
+								editPath,
+								matchCount + 1,
+							);
+							console.error(`[repair-layer] tool_call_blocked:${event.toolName} - sequential overlap for ${editPath}`);
+
+							eventSeq++;
+							const callSessionId: string = (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+							recordEvent({
+								ts: new Date().toISOString(),
+								eventType: "tool_result",
+								sessionId: callSessionId,
+								turnIndex: eventSeq,
+								toolName: event.toolName,
+								provider: ctx.model?.provider ?? "unknown",
+								model: ctx.model?.id ?? "unknown",
+								repairs: [],
+								wasRepaired: false,
+								executionFailed: true,
+								executionErrorType: "EDIT_MISMATCH",
+								wasHandled: true,
+								handleType: "sequential_overlap",
+								blindspotCategory: null,
+								inputKeys: Object.keys(originalInput),
+								inputNullKeys: [],
+								inputExtraProps: [],
+							});
+
+							return {
+								content: [{ type: "text" as const, text: guidance }],
+								isError: true,
+							};
+						}
+					}
+				}
+			}
+		}
+
 		// Step 4: Check if anything changed & collect repair descriptions
 		const repairedJson = JSON.stringify(withDefaults);
 		const repairSummary = originalJson !== repairedJson
@@ -367,6 +433,21 @@ export default function (pi: ExtensionAPI) {
 				);
 				// Clear transient repair message after 3s, restore permanent on/off indicator
 				setTimeout(() => setRepairStatus(ctx), 3000);
+			}
+		}
+
+		// ── Record previous edit state for sequential overlap detection ─
+		if (event.toolName === "edit" && editPath) {
+			const edits = (event.input as Record<string, unknown>)?.edits as Array<Record<string, unknown>> | undefined;
+			if (edits && edits.length > 0) {
+				const oldText = edits[0]?.oldText as string; // after repair, may be undefined if null
+				if (oldText) {
+					lastEditPerFile.set(editPath, {
+						oldText,
+						edits: edits.length,
+						firstLine: oldText.split("\n")[0] ?? oldText.slice(0, 80),
+					});
+				}
 			}
 		}
 
@@ -602,7 +683,9 @@ async function trackAndInterceptFailures(
 		// Includes extension tools too — getToolHelp only gives generic usage advice.
 		// On first failure the generic guidance helps the model self-correct without
 		// burning extra rounds on blind retries.
-		if (consecutiveCount >= 1) {
+		// EXCEPTION: TOOL_NOT_FOUND is handled by Phase 4 (category guidance) which
+		// provides generic advice ("/reload", install check, etc.) for any tool
+		if (consecutiveCount >= 1 && err.executionErrorType !== "TOOL_NOT_FOUND") {
 			const currentText = extractTextContent(event.content) ?? "";
 			let helpText = getToolHelp(event.toolName);
 

@@ -73,7 +73,7 @@ export function translateSchemaValidationError(errorText: string): string | null
 /** Blindspot suggestions mapped by category. */
 export const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
   EISDIR: "✅ Already handled: directory-listing fallback for read/read_file. Consider expanding to write tool and bash cd cases.",
-  ENOENT: "Pre-execution path validation: extract all paths from args, check existence before tool runs, try variations (relative, extension variants, fuzzy fffind match), and return tool error with alternatives.",
+  ENOENT: "Pre-execution path validation: extract all paths from args, check existence before tool runs, try variations (relative path, extension variants, fuzzy match), and return tool error with alternatives.",
   timeout: "Auto-timeout injection: detect long-running command patterns (build, test, lint, piped commands) and inject timeout_seconds=300+ when missing or too short.",
   "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
   SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
@@ -108,8 +108,8 @@ export function classifyErrorType(errorText: string | null): string | null {
   if (!errorText) return null;
   if (isEisdirError(errorText)) return "EISDIR";
   const lower = errorText.toLowerCase();
-  // "Tool X not found" errors are tool-not-found, not file-not-found
-  if (lower.includes("tool ") && lower.includes(" not found")) return null;
+  // "Tool X not found" errors: tool/extension not registered, not file-not-found
+  if (lower.includes("tool ") && lower.includes(" not found")) return "TOOL_NOT_FOUND";
   if (lower.includes("no such file") || lower.includes("not found") || lower.includes("enoent")) return "ENOENT";
   if (lower.includes("permission denied") || lower.includes("eacces") || lower.includes("eperm")) return "EACCES";
   if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
@@ -229,6 +229,21 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
  */
 export function getErrorGuidance(category: string, _toolName?: string): string | null {
   switch (category) {
+    case "TOOL_NOT_FOUND":
+      return (
+        `The "${_toolName}" tool was not found by the runtime. This means the tool or extension that provides it is not registered in the current session.` +
+        `\nPossible causes:` +
+        `\n  1. The package that provides this tool is not installed` +
+        `\n  2. The extension failed to load (init error, missing dependency, runtime crash)` +
+        `\n  3. Some sessions may load extensions differently` +
+        `\n` +
+        `\nTo debug:` +
+        `\n  1. Check installed packages: pi list` +
+        `\n  2. Try /reload to discover and reinitialize extensions` +
+        `\n  3. Use an alternative tool to accomplish the same goal` +
+        `\n` +
+        `\nDo NOT keep retrying the same missing tool. Change your approach.`
+      );
     case "SCHEMA_VALIDATION":
       return (
         `The tool rejected the arguments due to a schema validation error.` +

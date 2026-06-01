@@ -712,6 +712,43 @@ export function buildEditLoopGuidance(consecutiveCount: number): string {
   ].join("\n");
 }
 
+/** Format a number with ordinal suffix (1st, 2nd, 3rd, 4th, etc.). */
+export function ordinalSuffix(n: number): string {
+  // Teens (11-13) are always "th"
+  const teen = n % 100;
+  if (teen >= 11 && teen <= 13) return n + "th";
+  const last = n % 10;
+  if (last === 1) return n + "st";
+  if (last === 2) return n + "nd";
+  if (last === 3) return n + "rd";
+  return n + "th";
+}
+
+/**
+ * Build sequential edit overlap guidance.
+ *
+ * Warns when consecutive edits target overlapping region of the same file
+ * without an intervening read. Pure function — no I/O.
+ */
+export function buildSequentialEditGuidance(
+  prevOldTextFirstLine: string,
+  currentOldTextFirstLine: string,
+  filePath: string,
+  consecutiveCount: number,
+): string {
+  return [
+    `⚠️ You are editing the same region of \`${filePath}\` for the ${ordinalSuffix(consecutiveCount)} consecutive time without re-reading.`,
+    `Previous edit targeted content starting with:`,
+    `  "${prevOldTextFirstLine}"`,
+    `This edit targets content starting with:`,
+    `  "${currentOldTextFirstLine}"`,
+    `Since the previous edit already changed this region, the current oldText likely no longer matches.`,
+    "",
+    "Please re-read the file first with the read tool to get the current content,",
+    "then re-apply the edit with exact oldText matching the current file.",
+  ].join("\n");
+}
+
 /**
  * Content hash cache for staleness detection.
  *

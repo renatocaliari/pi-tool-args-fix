@@ -77,9 +77,9 @@ describe("classifyErrorType", () => {
     expect(classifyErrorType("Found 40 occurrences of the text in /path/to/file.ts. The text must be unique. Please provide more context to make it unique.")).toBe("EDIT_MISMATCH");
   });
 
-  it("returns null for 'Tool X not found' (tool-not-found != file-not-found)", () => {
-    expect(classifyErrorType("Tool fffind not found")).toBeNull();
-    expect(classifyErrorType("Tool agent_browser not found")).toBeNull();
+  it("returns TOOL_NOT_FOUND for 'Tool X not found'", () => {
+    expect(classifyErrorType("Tool fffind not found")).toBe("TOOL_NOT_FOUND");
+    expect(classifyErrorType("Tool agent_browser not found")).toBe("TOOL_NOT_FOUND");
     // Regular "not found" should still match ENOENT
     expect(classifyErrorType("no such file: package.json")).toBe("ENOENT");
   });

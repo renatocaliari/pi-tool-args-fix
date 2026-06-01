@@ -77,6 +77,7 @@ export type RepairType =
 export interface RepairStats {
   repairTypeStats: Map<RepairType, number>;
   totalRepairs: number;
+  sequentials: number; // sequential edit overlap detections
 }
 
 /**
@@ -107,6 +108,7 @@ export function createStats(): RepairStats {
   return {
     repairTypeStats: new Map<RepairType, number>(),
     totalRepairs: 0,
+    sequentials: 0,
   };
 }
 
@@ -134,7 +136,7 @@ export function recordRepairs(
  * Format stats as a table string.
  */
 export function formatStats(stats: RepairStats): string {
-  if (stats.totalRepairs === 0) {
+  if (stats.totalRepairs === 0 && stats.sequentials === 0) {
     return "No repairs applied in this session.";
   }
 
@@ -160,6 +162,12 @@ export function formatStats(stats: RepairStats): string {
   const header = `${"Repair Type".padEnd(maxTypeLen)}  ${"Count".padStart(5)}  ${"%".padStart(3)}`;
   const separator = "-".repeat(header.length);
   const totalLine = `${"Total".padEnd(maxTypeLen)}  ${String(stats.totalRepairs).padStart(5)}`;
+
+  // Add sequential overlap count if > 0
+  if (stats.sequentials > 0) {
+    lines.push("");
+    lines.push(`Sequential edit overlaps blocked: ${stats.sequentials}`);
+  }
 
   return [header, separator, ...lines, separator, totalLine].join("\n");
 }

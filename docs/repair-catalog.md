@@ -84,6 +84,7 @@ Context-aware help injected on tool failures, driven by `getToolHelp` + `getErro
 | **Edit mismatch context** | `buildEditMismatchContext`, `buildEnhancedEditMismatchGuidance` | `EDIT_MISMATCH` |
 | **Edit non-unique oldText** | `extractNonUniqueEditCount`, `findAllOldTextMatchLines`, `buildEditNonUniqueGuidance` | `EDIT_MISMATCH` (non-unique) |
 | **Edit wrong file** | `extractFailedEditIndex`, `extractFailedEditPath`, `buildEditWrongFileGuidance` | `EDIT_MISMATCH` (wrong file) |
+| **Sequential edit overlap** | `buildSequentialEditGuidance` | `EDIT_MISMATCH` (pre-flight) |
 | **Circuit breaker** | `buildCircuitBreakMessage`, `buildEditLoopGuidance` | `CONSECUTIVE_LOOP` |
 | **Staleness** | `buildStalenessGuidance` | `EDIT_MISMATCH` (stale file) |
 | **Path validation** | `buildPathValidationGuidance` | `ENOENT` |

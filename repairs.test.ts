@@ -55,6 +55,8 @@ import {
   findAllOldTextMatchLines,
   buildEditNonUniqueGuidance,
   buildEditWrongFileGuidance,
+  buildSequentialEditGuidance,
+  ordinalSuffix,
   REPAIRABLE_TOOLS,
   ENOENT_TOOLS,
   PATH_FIELD_NAMES,
@@ -1817,6 +1819,84 @@ describe("structural integrity — Fase 4 dispatch table completeness", () => {
 
     // Verify all 8 action keys exist (implicitly via the loop above)
     // If any action was dropped from classifyField, its test here fails.
+  });
+});
+
+// ─── Sequential Edit Overlap Tests ────────────────────────────────────────
+
+describe("ordinalSuffix", () => {
+  it("formats 1 as 1st", () => {
+    expect(ordinalSuffix(1)).toBe("1st");
+  });
+  it("formats 2 as 2nd", () => {
+    expect(ordinalSuffix(2)).toBe("2nd");
+  });
+  it("formats 3 as 3rd", () => {
+    expect(ordinalSuffix(3)).toBe("3rd");
+  });
+  it("formats 4 as 4th", () => {
+    expect(ordinalSuffix(4)).toBe("4th");
+  });
+  it("formats 11 as 11th (teen exception)", () => {
+    expect(ordinalSuffix(11)).toBe("11th");
+  });
+  it("formats 12 as 12th", () => {
+    expect(ordinalSuffix(12)).toBe("12th");
+  });
+  it("formats 13 as 13th", () => {
+    expect(ordinalSuffix(13)).toBe("13th");
+  });
+  it("formats 21 as 21st", () => {
+    expect(ordinalSuffix(21)).toBe("21st");
+  });
+  it("formats 22 as 22nd", () => {
+    expect(ordinalSuffix(22)).toBe("22nd");
+  });
+  it("formats 23 as 23rd", () => {
+    expect(ordinalSuffix(23)).toBe("23rd");
+  });
+  it("formats 100 as 100th", () => {
+    expect(ordinalSuffix(100)).toBe("100th");
+  });
+});
+
+describe("buildSequentialEditGuidance", () => {
+  it("builds a warning message for a first overlap", () => {
+    const result = buildSequentialEditGuidance(
+      "function writeVersion(filePath, version) {",
+      "function writeVersion(filePath, version) {",
+      "/path/to/version-sync.mjs",
+      1,
+    );
+    expect(result).toContain("editing the same region");
+    expect(result).toContain("version-sync.mjs");
+    expect(result).toContain("1st consecutive time");
+    expect(result).toContain("Previous edit targeted content starting with:");
+    expect(result).toContain("This edit targets content starting with:");
+    expect(result).toContain("re-read the file");
+  });
+
+  it("includes the previous and current first lines", () => {
+    const result = buildSequentialEditGuidance(
+      "old version code here",
+      "new version code here",
+      "file.ts",
+      2,
+    );
+    expect(result).toContain("old version code here");
+    expect(result).toContain("new version code here");
+    expect(result).toContain("2nd consecutive time");
+  });
+
+  it("includes the file path", () => {
+    const result = buildSequentialEditGuidance(
+      "first line",
+      "first line",
+      "/Users/test/project/src/main.ts",
+      3,
+    );
+    expect(result).toContain("/Users/test/project/src/main.ts");
+    expect(result).toContain("3rd consecutive time");
   });
 });
 
