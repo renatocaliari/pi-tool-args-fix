@@ -1900,4 +1900,47 @@ describe("buildSequentialEditGuidance", () => {
   });
 });
 
+describe("structural integrity — editPath scoping in index.ts", () => {
+  it("editPath is declared at handler scope, before Step 3c", () => {
+    const source = readIndexSource();
+    // Find the declaration before Step 3c
+    const step3cMarker = source.indexOf("// ── Step 3c:");
+    expect(step3cMarker).toBeGreaterThan(0);
+    const beforeStep3c = source.slice(0, step3cMarker);
+    expect(beforeStep3c).toContain("let editPath: string | undefined");
+  });
+
+  it("editPath is NOT re-declared inside Step 3c block", () => {
+    const source = readIndexSource();
+    const step3cStart = source.indexOf("// ── Step 3c:");
+    const step3dStart = source.indexOf("// ── Step 3d:");
+    const step3cBlock = source.slice(step3cStart, step3dStart);
+    // Should not contain a second "let editPath" declaration
+    const occurrences = step3cBlock.match(/let editPath/g);
+    expect(occurrences).toBeNull();
+  });
+
+  it("editPath is referenced in Step 3d (sequential overlap detection)", () => {
+    const source = readIndexSource();
+    const step3dStart = source.indexOf("// ── Step 3d:");
+    const recordStart = source.indexOf("// ── Record previous");
+    const step3dBlock = source.slice(step3dStart, recordStart);
+    expect(step3dBlock).toContain("editPath");
+  });
+
+  it("editPath is referenced in Record previous edit state block", () => {
+    const source = readIndexSource();
+    const recordStart = source.indexOf("// ── Record previous");
+    const handlerEnd = source.indexOf("pi.on(\"tool_result\"", source.indexOf("// ── Record previous"));
+    const recordBlock = source.slice(recordStart, handlerEnd > 0 ? handlerEnd : recordStart + 300);
+    expect(recordBlock).toContain("editPath");
+  });
+
+  function readIndexSource(): string {
+    // Read the index.ts file from disk
+    const fs = require("fs");
+    return fs.readFileSync(require.resolve("./index.ts"), "utf-8");
+  }
+});
+
 

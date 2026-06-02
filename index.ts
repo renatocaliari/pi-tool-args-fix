@@ -286,10 +286,12 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
+		// ── Shared state for edit tool across Steps 3c, 3d, and Record ──
+		let editPath: string | undefined;
+
 		// ── Step 3c: Staleness check (edit tool — content hash cache) ───
 		if (event.toolName === "edit" || event.toolName === "edit_file") {
 			// Extract the file path from the edit request
-			let editPath: string | undefined;
 			if (event.toolName === "edit") {
 				editPath = (event.input as Record<string, unknown>)?.path as string | undefined;
 			} else {
