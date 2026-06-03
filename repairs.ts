@@ -608,11 +608,6 @@ export const REPAIRABLE_TOOLS = new Set([
   "grep", "find", "ls",
 ]);
 
-/** Tools that should get pre-flight ENOENT path validation. */
-export const ENOENT_TOOLS = new Set([
-  "read", "read_file", "write", "write_file",
-  "edit", "edit_file", "bash", "ffgrep", "fffind",
-]);
 
 /**
  * Resolve a user-provided path, handling tilde expansion.

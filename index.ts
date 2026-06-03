@@ -234,9 +234,11 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// ── Step 3b: Path validation (pre-flight ENOENT detection) ──────
-		const ENOENT_TOOLS = new Set(["read", "read_file", "write", "write_file", "edit", "edit_file", "bash", "ffgrep", "fffind"]);
-		if (ENOENT_TOOLS.has(event.toolName)) {
-			const paths = extractPathsFromArgs(withDefaults);
+		// Attribute-based detection: any tool with path fields gets validated.
+		// Tools with content/text/code fields (like write) are skipped — they create files.
+		const paths = extractPathsFromArgs(withDefaults);
+		const hasContentField = Object.keys(withDefaults).some(k => isContentField(k));
+		if (paths.length > 0 && !hasContentField) {
 			const invalidPaths: string[] = [];
 			for (const p of paths) {
 				const resolved = p.startsWith("~/") ? path.join(process.env.HOME || "/home/user", p.slice(2)) : p;

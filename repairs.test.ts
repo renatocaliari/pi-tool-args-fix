@@ -58,7 +58,6 @@ import {
   buildSequentialEditGuidance,
   ordinalSuffix,
   REPAIRABLE_TOOLS,
-  ENOENT_TOOLS,
   PATH_FIELD_NAMES,
   ARRAY_FIELD_NAMES,
   BOOLEAN_FIELD_NAMES,
@@ -1007,6 +1006,101 @@ describe("extractPathsFromArgs", () => {
   });
 });
 
+// ─── Attribute-Based Path Validation Logic ────────────────────────────────
+// The pre-flight ENOENT detection is now attribute-based: it checks whether
+// a tool_call has path fields AND no content fields (like content/text/code).
+// Tools with content fields (e.g., write) are skipped — they create files.
+// This approach covers ANY tool without hardcoding tool names.
+
+describe("attribute-based path validation logic", () => {
+  it("validates paths for tools without content fields (e.g., read)", () => {
+    // read-only tool: has path, no content fields
+    const args = { path: "/tmp/missing.ts" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(false);
+    // → pre-flight validation should apply
+  });
+
+  it("skips validation for write tools that have content field", () => {
+    // write: has path AND content field
+    const args = { path: "/tmp/new-file.ts", content: "hello world" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(true);
+    // → pre-flight validation should NOT apply (would block creating new files)
+  });
+
+  it("validates paths for edit tool (edits array is not a content field, oldText is nested)", () => {
+    // edit: path is top-level, oldText/newText are nested inside edits[]
+    const args = {
+      path: "/tmp/missing.ts",
+      edits: [{ oldText: "a", newText: "b" }],
+    };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(false);
+    // → pre-flight validation should apply (missing file is a real error for edit)
+  });
+
+  it("validates paths for edit with array of edits (absolutePaths only)", () => {
+    const args = {
+      path: "/tmp/missing.ts",
+      edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }],
+    };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(false);
+  });
+
+  it("covers unknown/extension tools with path but no content (e.g., agent_browser)", () => {
+    // Any tool, present or future, that has a path field and no content field
+    const args = { path: "/tmp/screenshot.png" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(false);
+  });
+
+  it("covers unknown/extension tools with path AND content (e.g., write-like)", () => {
+    const args = { path: "/tmp/new.doc", text: "report content" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(true);
+  });
+
+  it("returns empty paths for tools with no path fields (e.g., web_search)", () => {
+    const args = { query: "hello world" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBe(0);
+    expect(hasContent).toBe(false);
+  });
+
+  it("skips validation for tools with paths and multiple content fields", () => {
+    const args = { path: "/tmp/data.json", code: "const x = 1;", description: "test" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(hasContent).toBe(true);
+  });
+
+  it("bash tool: has command (content) but also extractPathsFromArgs finds paths in command text", () => {
+    // bash has command which is a content field → skip validation
+    const args = { command: "cat /tmp/file.ts" };
+    const paths = extractPathsFromArgs(args);
+    const hasContent = Object.keys(args).some(k => isContentField(k));
+    expect(hasContent).toBe(true);
+    // Note: paths are found (extracted from command string), but hasContent=true so validation skips
+  });
+});
+
+
 // ─── ContentHashCache Tests ──────────────────────────────────────────────────
 
 describe("ContentHashCache", () => {
@@ -1260,25 +1354,6 @@ describe("REPAIRABLE_TOOLS", () => {
     expect(REPAIRABLE_TOOLS.has("question")).toBe(false);
     expect(REPAIRABLE_TOOLS.has("ask_user")).toBe(false);
     expect(REPAIRABLE_TOOLS.has("unknown_custom")).toBe(false);
-  });
-});
-
-describe("ENOENT_TOOLS", () => {
-  it("contains file operation tools", () => {
-    expect(ENOENT_TOOLS.has("read")).toBe(true);
-    expect(ENOENT_TOOLS.has("write")).toBe(true);
-    expect(ENOENT_TOOLS.has("edit")).toBe(true);
-  });
-
-  it("contains search tools that accept paths", () => {
-    expect(ENOENT_TOOLS.has("ffgrep")).toBe(true);
-    expect(ENOENT_TOOLS.has("fffind")).toBe(true);
-  });
-
-  it("does NOT contain tools that don't accept file paths", () => {
-    expect(ENOENT_TOOLS.has("agent_browser")).toBe(false);
-    expect(ENOENT_TOOLS.has("web_search")).toBe(false);
-    expect(ENOENT_TOOLS.has("subagent")).toBe(false);
   });
 });
 
