@@ -259,9 +259,9 @@ After any structural change, nested objects/arrays are recursively validated.
 
 ### The Problem
 
-LLM providers (DeepSeek V4 Flash, Anthropic Claude, OpenAI) implement **prefix caching**: identical conversation prefixes bypass recomputation. Cache hit vs miss on DeepSeek V4 Flash costs $0.0028 vs $0.14 per million tokens — a **50× difference**.
+LLM providers implement **prefix caching**: identical conversation prefixes bypass recomputation. Cache hit vs miss on DeepSeek V4 Flash costs $0.0028 vs $0.14 per million tokens — a **50× difference**. Anthropic Claude cache reads cost 10% of base input (opt-in via `cache_control`). OpenAI offers automatic caching with up to 90% discount.
 
-Every modification to a `tool_result` changes the conversation prefix, invalidating the cache for all subsequent tokens.
+Every modification to a `tool_result` changes the byte sequence of the conversation from that point forward, preventing the full prefix from matching cached units. Even partial cache hits are compromised — the unchanged prefix (system prompt, tool definitions, earlier turns) can still be cached independently, but every tool_result mutation creates a new byte sequence that must be recomputed from the mutation point onward.
 
 ### Two Types of Work
 
