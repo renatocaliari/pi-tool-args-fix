@@ -139,6 +139,12 @@ export function classifyErrorType(errorText: string | null): string | null {
  * Return contextual guidance text for a native CLI tool.
  * Used when a CLI tool fails consecutively — instead of showing a bare
  * error, the model gets structured guidance on how to use the tool.
+ *
+ * Cache-friendly: output is a function of (toolName, failedCommand)
+ * only. `failedCommand` is a categorical input from the model — the same
+ * command on a replayed session produces the same text. The first 100
+ * chars of failedCommand are deterministic for the same model output.
+ * Same tool + same failed command → same string → prefix cache hit.
  */
 export function getToolHelp(toolName: string, failedCommand?: string): string {
   const common =
@@ -249,6 +255,11 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
  * Used when an error type like SCHEMA_VALIDATION occurs — the model gets structured
  * advice about what went wrong and how to fix it.
  * Returns null for error categories that have no predefined guidance.
+ *
+ * Cache-friendly: output is a function of (category, toolName) only.
+ * For TOOL_NOT_FOUND, the tool name is included in the static text.
+ * No turn counts, failure counts, or other session state appear in output.
+ * Same category + same tool → same string → prefix cache hit.
  */
 export function getErrorGuidance(category: string, _toolName?: string): string | null {
   switch (category) {

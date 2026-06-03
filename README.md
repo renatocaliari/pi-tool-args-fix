@@ -7,13 +7,13 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-401_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-479_passing-2ea043?style=for-the-badge)
 
-**Fix LLM tool-calling bugs transparently — no model changes, no retraining.**
+**Fix LLM tool-calling bugs transparently — no model changes, no retraining, no cache penalty.**
 
 <br>
 
-[💡 Concept](#-concept) · [✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🔍 Architecture](#-architecture) · [📊 Observability](#-observability) · [🔁 Auto-Evolution](#-auto-evolution) · [⚙️ Reference](#️-reference) · [🤝 Contributing](#-contributing)
+[💡 Concept](#-concept) · [✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🔍 Architecture](#-architecture) · [🧠 Cache Strategy](#-cache-strategy) · [📊 Observability](#-observability) · [🔁 Auto-Evolution](#-auto-evolution) · [⚙️ Reference](#️-reference) · [🤝 Contributing](#-contributing)
 
 <br>
 
@@ -108,20 +108,23 @@ These aren't field repairs — they're runtime adjustments that make the agent m
 </details>
 
 <details>
-<summary><strong>🛡️ Error recovery guidance</strong> — error classification + context-aware help on failures</summary>
+<summary><strong>🛡️ Error recovery guidance (side-channel)</strong> — classification + context-aware help, zero cache impact</summary>
 
 <br>
 
-| Guidance | Trigger | Effect |
-|----------|---------|--------|
-| **CLI semantics** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Appends exit-code explanation and tool-specific tips |
+All guidance is injected via the `context` event (deep copy of messages). The original `tool_result` content is never modified — the LLM sees the guidance, but the conversation prefix is preserved for cache hits.
+
+| Guidance | Trigger | Delivery |
+|----------|---------|----------|
+| **Pre-execution validation** | Invalid path, stale file, sequential overlap | Returns fixed `"[repair-layer] blocked"` + guidance via context event |
+| **CLI semantics** | 2nd+ consecutive `bash`/`grep`/`find`/`ls` failure | Context event with tool-specific tips |
 | **Edit mismatch** | `EDIT_MISMATCH` on 2nd+ consecutive `edit` failure | Reads the target file and shows current content around the failed `oldText` |
 | **Edit non-unique** | `oldText` matches multiple locations | Reports match count and line numbers so the model can narrow |
 | **Edit wrong file** | Error path differs from input path | Surfaces the mismatch with both paths |
 | **Schema validation** | First `SCHEMA_VALIDATION` error per tool | Explains validation rules (types, enums, maxLength) |
-| **Circuit breaker** | 7+ consecutive same-tool failures | Returns `🛑 Circuit breaker: strategy-change required` instead of looping |
-| **Auto-timeout** | Detected long-running command (install/build/test) | Suggests explicit `timeout_seconds` |
-| **Staleness** | edit failed and file changed since last read | Reports which turn the file was last read vs its current hash |
+| **Circuit breaker** | 7+ consecutive same-tool failures | `🛑 Circuit breaker` via context event instead of looping |
+| **Auto-timeout** | Detected long-running command (install/build/test) | Injects `timeout_seconds` pre-execution |
+| **Staleness** | File changed since last read | Blocked pre-execution with context guidance |
 
 </details>
 
@@ -173,6 +176,7 @@ pi install git:github.com/renatocaliari/pi-tool-repair-layer
 /repair-toggle          # Toggle on/off
 /repair-stats-session   # Repairs in this session
 /repair-stats-global    # Repairs across all sessions
+/repair-cache-info      # Cache impact metrics
 /repair-gaps            # Error patterns not yet covered
 /repair-suggest         # LLM suggestions for new repairs
 ```
@@ -183,24 +187,48 @@ pi install git:github.com/renatocaliari/pi-tool-repair-layer
 
 ## 🔍 Architecture
 
+### Three-Layer Design
+
+The extension uses three pi event handlers in sequence, each with a distinct responsibility:
+
 ```
-                    tool_call                    tool_result
-                         │                           │
-                         ▼                           ▼
-               ┌─────────────────────┐     ┌──────────────────────┐
-               │ 1. Classify fields  │     │ 1. Classify error     │
-               │    (array, string,  │     │ 2. Detect empty       │
-               │     boolean, etc.)  │     │ 3. Track failures     │
-               │                     │     │ 4. Inject guidance    │
-               │ 2. Apply repairs    │     │ 5. Directory fallback │
-               │    (sub-millisecond)│     │ 6. Log to JSONL       │
-               └────────┬────────────┘     └──────────┬───────────┘
-                        │                             │
-                        ▼                             ▼
-                  No repairs?                     Handled?
-                  ───────────                     ────────
-                  Pass through                     Return patched result
-                  untouched                        or undefined (pass)
+┌─────────────────────────────────────────────────────────┐
+│  tool_call handler    (pre-execution repair + validate)  │
+│                                                         │
+│  • Step 1-2: Field repairs (null strip, array wrap,     │
+│    boolean coercion, etc.) — sub-ms per field           │
+│  • Step 3a: Auto-timeout injection (bash)               │
+│  • Step 3b: Path validation — ENOENT pre-flight         │
+│  • Step 3b-ii: EISDIR pre-flight (before read hits dir) │
+│  • Step 3c: Content hash staleness check (edit tool)    │
+│  • Step 3d: Sequential edit overlap detection           │
+│  • Queues guidance via pendingGuidance[]                 │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│  tool_result handler  (analytics + guidance queue only)  │
+│                                                         │
+│  NEVER modifies event.content — returns undefined        │
+│  • Phase 1-2: Error classification + empty detection    │
+│  • Phase 3: Consecutive failure tracking + CLI queue    │
+│  • Phase 4: Error-type guidance (once per category)     │
+│  • Phase 5: Content hash tracking (read/read_file)      │
+│  • Phase 6: Write directory fallback                    │
+│  • Phase 7: Event recording to JSONL                    │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│  context event handler  (side-channel guidance)          │
+│                                                         │
+│  • Fires before every LLM call                          │
+│  • event.messages is a DEEP COPY — mutations don't      │
+│    affect the persistent conversation history           │
+│  • Injects queued guidance from pendingGuidance[]        │
+│    into the deep copy                                    │
+│  • LLM sees guidance — cache is never modified           │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Validate-then-Repair Philosophy
@@ -225,22 +253,63 @@ Content fields (`command`, `code`, `oldText`, `newText`, `text`, `content`) are 
 
 After any structural change, nested objects/arrays are recursively validated.
 
-### Event Pipeline
+---
 
-Every `tool_call` and `tool_result` flows through 9 handler phases:
+## 🧠 Cache Strategy
+
+### The Problem
+
+LLM providers (DeepSeek V4 Flash, Anthropic Claude, OpenAI) implement **prefix caching**: identical conversation prefixes bypass recomputation. Cache hit vs miss on DeepSeek V4 Flash costs $0.0028 vs $0.14 per million tokens — a **50× difference**.
+
+Every modification to a `tool_result` changes the conversation prefix, invalidating the cache for all subsequent tokens.
+
+### Two Types of Work
+
+| Category | What | Cache Impact |
+|----------|------|-------------|
+| **Pre-execution repair** | Null stripping, array wrapping, boolean coercion, JSON parsing, path cleaning | **Zero** — args modified before the tool runs; conversation history is unchanged |
+| **Post-execution guidance** | Error help text, context about repairs, circuit breaker messages | Traditional approach: appended to tool result → **breaks cache** |
+
+### The Solution: Side-Channel Guidance
 
 ```
-| Phase | Handler | Purpose |
-|-------|---------|---------|
-| **A** | `tool_call` | Field-level repairs (pre-execution) |
-| **1** | `tool_result` | Error classification |
-| **2** | `tool_result` | Empty result detection |
-| **3** | `tool_result` | Consecutive failure tracking + CLI guidance |
-| **4** | `tool_result` | Error-type guidance on first occurrence |
-| **5** | `tool_result` | EISDIR directory fallback |
-| **6** | `tool_result` | Content hash staleness tracking |
-| **7** | `tool_result` | Write tool directory fallback |
-| **8** | `tool_result` | Event recording to JSONL
+Traditional (cache-breaking):
+  tool runs → error → extension APPENDS guidance to tool_result → history MODIFIED → cache miss
+
+This extension (cache-preserving):
+  tool runs → error → extension returns UNDEFINED → history UNCHANGED → cache hit
+                                      ↓
+                        context event fires → deep copy of messages
+                                      ↓
+                        guidance injected into DEEP COPY → LLM sees it
+                                      ↓
+                        deep copy is DISCARDED after LLM call
+                        persistent history still has original tool result
+```
+
+Key principles:
+1. **One-shot injection**: Each guidance kind fires **once per session**. Subsequent identical errors pass through unchanged → cache hit.
+2. **Deterministic guidance strings**: Same error always produces the same guidance text → byte-stable across sessions.
+3. **Minimal block messages**: Pre-execution validators (path check, staleness, overlap) block tools with a fixed `"[repair-layer] blocked"` string — always byte-identical.
+4. **Analytics-only tool_result**: The `tool_result` handler never modifies `event.content`. It only classifies errors, queues guidance, and records events to JSONL.
+
+### Cache Metrics
+
+Track injection impact with `/repair-cache-info`:
+
+```
+> /repair-cache-info
+
+📊 Cache Impact
+─────────────────
+Guidance injections: 3
+Each injection means the tool_result text differs from what it would be
+without this extension, potentially invalidating DeepSeek's 64-token
+block cache for subsequent tokens.
+
+Note: pre-execution repairs (null stripping, array wrapping, etc.)
+have ZERO cache impact — they modify args before the tool executes.
+Only post-execution guidance injection affects the conversation prefix.
 ```
 
 ---
@@ -256,6 +325,7 @@ Every `tool_call` and `tool_result` flows through 9 handler phases:
 | `/repair-toggle` | Toggle repair layer on/off |
 | `/repair-stats-session` | In-memory stats for the current session |
 | `/repair-stats-global` | Aggregated stats across all logged sessions |
+| `/repair-cache-info` | Cache impact metrics (guidance injection count) |
 | `/repair-gaps` | Error patterns without repair coverage |
 | `/repair-suggest` | LLM-powered blindspot analysis and new repair suggestions |
 
@@ -445,19 +515,22 @@ ORDER BY cnt DESC;
 
 ```
 pi-tool-repair-layer/
-├── index.ts                  # Extension entry: handlers + commands (~1193 lines)
-├── repairs.ts                # Pure repair functions + dispatch table + guidance (~1196 lines)
-├── repairs/constants.ts      # 8 constant sets (PATH, ARRAY, BOOLEAN, etc.) (~152 lines)
-├── recorder.ts               # Event recording + analysis + re-exports (~372 lines)
+├── index.ts                  # Extension entry: 3 handlers (tool_call, tool_result, context)
+├── repairs.ts                # Pure repair functions + dispatch table + guidance
+├── repairs/*.ts              # Sub-modules (constants, path-utils, array-utils, coercion, etc.)
+├── recorder.ts               # Event recording + analysis + re-exports
 ├── recorder/
-│   ├── classifier.ts         # Error classification + CLI help text (~184 lines)
-│   ├── tracker.ts            # Consecutive failure tracker (~87 lines)
+│   ├── classifier.ts         # Error classification + CLI help text
+│   ├── tracker.ts            # Consecutive failure tracker
 │   └── formatting.ts         # Text formatting helpers
-├── stats.ts                  # In-memory session stats + RepairToggle (~165 lines)
-├── suggest-repairs.ts        # LLM repair suggestion engine (~940 lines)
+├── stats.ts                  # In-memory session stats + RepairToggle
+├── suggest-repairs.ts        # LLM repair suggestion engine
+├── handlers/
+│   ├── commands.ts           # All /repair-* command handlers
+│   └── context.ts            # Shared handler types
 ├── docs/repair-catalog.md    # Source of truth for all repair function signatures
 ├── testing-strategy.md       # Test coverage and mutation strategy
-├── *.test.ts                 # 401 tests across 6 files
+├── *.test.ts                 # 479 tests across 17 files
 └── README.md                 # You are here
 ```
 

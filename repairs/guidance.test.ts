@@ -30,11 +30,18 @@ describe("buildPathValidationGuidance", () => {
 });
 
 describe("buildStalenessGuidance", () => {
-  it("includes the last read turn number", () => {
-    expect(buildStalenessGuidance(42)).toContain("turn 42");
+  it("is deterministic regardless of turn number (cache-safe)", () => {
+    // Same output for turn 1, 42, 1000 — required for prefix cache hits
+    expect(buildStalenessGuidance(1)).toBe(buildStalenessGuidance(42));
+    expect(buildStalenessGuidance(42)).toBe(buildStalenessGuidance(1000));
   });
-  it("handles turn 0", () => {
-    expect(buildStalenessGuidance(0)).toContain("turn 0");
+  it("does NOT include the turn number in output", () => {
+    expect(buildStalenessGuidance(42)).not.toContain("turn 42");
+    expect(buildStalenessGuidance(42)).not.toContain("(turn");
+  });
+  it("works without arguments (backward compatible)", () => {
+    const out = buildStalenessGuidance();
+    expect(out).toContain("File content has changed");
   });
   it("mentions exact current text requirement", () => {
     expect(buildStalenessGuidance(5)).toContain("exact current text as oldText");
@@ -42,29 +49,50 @@ describe("buildStalenessGuidance", () => {
 });
 
 describe("buildCircuitBreakMessage", () => {
-  it("includes tool name and consecutive count", () => {
+  it("is deterministic per tool (cache-safe)", () => {
+    // Same output for 7, 10, 100 failures — required for prefix cache hits
+    expect(buildCircuitBreakMessage("edit", 7, "x")).toBe(
+      buildCircuitBreakMessage("edit", 10, "y"),
+    );
+    expect(buildCircuitBreakMessage("edit", 10, "x")).toBe(
+      buildCircuitBreakMessage("edit", 100, "z"),
+    );
+  });
+  it("does NOT include consecutive count or error details in output", () => {
     const msg = buildCircuitBreakMessage("edit", 10, "oldText not found");
-    expect(msg).toContain("edit");
-    expect(msg).toContain("10 consecutive");
+    expect(msg).not.toContain("10 consecutive");
+    expect(msg).not.toContain("Error details");
+    expect(msg).not.toContain("oldText not found");
+  });
+  it("works without optional arguments (backward compatible)", () => {
+    const msg = buildCircuitBreakMessage("bash");
+    expect(msg).toContain("bash");
     expect(msg).toContain("CIRCUIT BREAKER");
   });
-  it("truncates long error details to 200 chars", () => {
-    const longError = "x".repeat(500);
-    const msg = buildCircuitBreakMessage("bash", 7, longError);
-    expect(msg).toContain("x".repeat(200));
-    expect(msg).not.toContain("x".repeat(201));
+  it("includes tool name", () => {
+    expect(buildCircuitBreakMessage("edit", 7, "failed")).toContain("edit");
+    expect(buildCircuitBreakMessage("edit", 7, "failed")).toContain("CIRCUIT BREAKER");
   });
   it("suggests alternative strategies", () => {
     const msg = buildCircuitBreakMessage("edit", 7, "failed");
     expect(msg).toContain("write tool");
   });
-  it("handles edge: 7 consecutive", () => {
-    const msg = buildCircuitBreakMessage("bash", 7, "timeout");
-    expect(msg).toContain("7 consecutive");
+  it("differs by tool name (categorical input)", () => {
+    expect(buildCircuitBreakMessage("edit", 7, "x")).not.toBe(
+      buildCircuitBreakMessage("bash", 7, "x"),
+    );
   });
 });
 
 describe("buildEditLoopGuidance", () => {
+  it("returns the SAME text for all 3-4 failures (cache-safe at threshold)", () => {
+    // After threshold, all subsequent calls return identical text
+    expect(buildEditLoopGuidance(3)).toBe(buildEditLoopGuidance(4));
+  });
+  it("returns the SAME text for all 5+ failures (cache-safe at threshold)", () => {
+    expect(buildEditLoopGuidance(5)).toBe(buildEditLoopGuidance(7));
+    expect(buildEditLoopGuidance(7)).toBe(buildEditLoopGuidance(10));
+  });
   it("returns whitespace tip for 3 failures", () => {
     expect(buildEditLoopGuidance(3)).toContain("whitespace");
   });
@@ -80,6 +108,25 @@ describe("buildEditLoopGuidance", () => {
 });
 
 describe("buildEmptySearchGuidance", () => {
+  it("is deterministic per pattern+tool (cache-safe)", () => {
+    // Same output for 3, 5, 10 consecutive empties — required for prefix cache hits
+    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toBe(
+      buildEmptySearchGuidance("NavUnifiedDropdown", 5, "find"),
+    );
+    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toBe(
+      buildEmptySearchGuidance("NavUnifiedDropdown", 10, "find"),
+    );
+  });
+  it("does NOT include consecutive count in output", () => {
+    const msg = buildEmptySearchGuidance("session", 5, "grep");
+    expect(msg).not.toContain("5 times");
+    expect(msg).not.toContain("a different tool");
+  });
+  it("works without optional count (backward compatible)", () => {
+    const msg = buildEmptySearchGuidance("NavUnifiedDropdown", undefined, "find");
+    expect(msg).toContain("find");
+    expect(msg).toContain("NavUnifiedDropdown");
+  });
   it("includes tool name and pattern", () => {
     const msg = buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find");
     expect(msg).toContain("find");
@@ -87,9 +134,6 @@ describe("buildEmptySearchGuidance", () => {
   });
   it("suggests listing directory for persistent failures", () => {
     expect(buildEmptySearchGuidance("NavUnifiedDropdown", 5, "grep")).toContain("Change strategy");
-  });
-  it("suggests different tool at 5+ consecutive failures", () => {
-    expect(buildEmptySearchGuidance("session", 5, "grep")).toContain("a different tool");
   });
   it("mentions common naming conventions", () => {
     expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toContain("snake_case");
@@ -278,6 +322,25 @@ describe("ordinalSuffix", () => {
 });
 
 describe("buildSequentialEditGuidance", () => {
+  it("is deterministic per (prevLine, currentLine, filePath) — cache-safe", () => {
+    // consecutiveCount is intentionally NOT in the output
+    const a = buildSequentialEditGuidance("foo", "foo", "file.ts", 1);
+    const b = buildSequentialEditGuidance("foo", "foo", "file.ts", 5);
+    expect(a).toBe(b);
+  });
+  it("does NOT include ordinal count in output (cache-safe)", () => {
+    const result = buildSequentialEditGuidance(
+      "function writeVersion(filePath, version) {",
+      "function writeVersion(filePath, version) {",
+      "/path/to/version-sync.mjs", 1,
+    );
+    expect(result).not.toContain("1st consecutive");
+    expect(result).not.toContain("consecutive time");
+  });
+  it("works without optional count (backward compatible)", () => {
+    const result = buildSequentialEditGuidance("foo", "foo", "file.ts");
+    expect(result).toContain("editing the same region");
+  });
   it("builds a warning message for a first overlap", () => {
     const result = buildSequentialEditGuidance(
       "function writeVersion(filePath, version) {",
@@ -286,18 +349,15 @@ describe("buildSequentialEditGuidance", () => {
     );
     expect(result).toContain("editing the same region");
     expect(result).toContain("version-sync.mjs");
-    expect(result).toContain("1st consecutive time");
     expect(result).toContain("re-read the file");
   });
   it("includes the previous and current first lines", () => {
     const result = buildSequentialEditGuidance("old version code here", "new version code here", "file.ts", 2);
     expect(result).toContain("old version code here");
     expect(result).toContain("new version code here");
-    expect(result).toContain("2nd consecutive time");
   });
   it("includes the file path", () => {
     const result = buildSequentialEditGuidance("first line", "first line", "/Users/test/project/src/main.ts", 3);
     expect(result).toContain("/Users/test/project/src/main.ts");
-    expect(result).toContain("3rd consecutive time");
   });
 });

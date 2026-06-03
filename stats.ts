@@ -78,6 +78,7 @@ export interface RepairStats {
   repairTypeStats: Map<RepairType, number>;
   totalRepairs: number;
   sequentials: number; // sequential edit overlap detections
+  guidanceInjections: number; // total guidance injections this session (cache breaks)
 }
 
 /**
@@ -109,6 +110,7 @@ export function createStats(): RepairStats {
     repairTypeStats: new Map<RepairType, number>(),
     totalRepairs: 0,
     sequentials: 0,
+    guidanceInjections: 0,
   };
 }
 
@@ -135,8 +137,29 @@ export function recordRepairs(
 /**
  * Format stats as a table string.
  */
+/**
+ * Format cache impact info for the session.
+ */
+export function formatCacheInfo(stats: RepairStats): string {
+  if (stats.guidanceInjections === 0) {
+    return "No guidance injections this session — no cache impact from this extension.";
+  }
+  return [
+    `📊 Cache Impact`,
+    `─────────────────`,
+    `Guidance injections: ${stats.guidanceInjections}`,
+    `Each injection means the tool_result text differs from what it would be`,
+    `without this extension, potentially invalidating DeepSeek's 64-token`,
+    `block cache for subsequent tokens.`,
+    ``,
+    `Note: pre-execution repairs (null stripping, array wrapping, etc.)`,
+    `have ZERO cache impact — they modify args before the tool executes.`,
+    `Only post-execution guidance injection affects the conversation prefix.`,
+  ].join("\n");
+}
+
 export function formatStats(stats: RepairStats): string {
-  if (stats.totalRepairs === 0 && stats.sequentials === 0) {
+  if (stats.totalRepairs === 0 && stats.sequentials === 0 && stats.guidanceInjections === 0) {
     return "No repairs applied in this session.";
   }
 
@@ -167,6 +190,11 @@ export function formatStats(stats: RepairStats): string {
   if (stats.sequentials > 0) {
     lines.push("");
     lines.push(`Sequential edit overlaps blocked: ${stats.sequentials}`);
+  }
+
+  // Add guidance injection count (cache impact metric)
+  if (stats.guidanceInjections > 0) {
+    lines.push(`Guidance injections (cache misses): ${stats.guidanceInjections}`);
   }
 
   return [header, separator, ...lines, separator, totalLine].join("\n");

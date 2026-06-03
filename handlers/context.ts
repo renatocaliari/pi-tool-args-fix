@@ -13,7 +13,7 @@ export interface HandlerContext {
   repairToggle: RepairToggle;
   eventSeq: { value: number };
   lastEditPerFile: Map<string, any>;
-  guidedErrorPairs: Set<string>;
+  injectedGuidance: Set<string>;
   setRepairStatus: (ctx: any) => void;
 }
 

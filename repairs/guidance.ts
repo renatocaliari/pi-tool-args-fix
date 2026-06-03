@@ -35,11 +35,15 @@ export function buildPathValidationGuidance(
 
 /**
  * Build staleness guidance for edit tool when content hash has changed.
- * Pure function — no I/O.
+ *
+ * Cache-friendly: output is a fixed string with no dynamic state.
+ * The `lastReadTurn` parameter is accepted for backward compatibility
+ * (some callers still pass it) but is intentionally NOT included in
+ * the output. Same error → same string → DeepSeek prefix cache hit.
  */
-export function buildStalenessGuidance(lastReadTurn: number): string {
+export function buildStalenessGuidance(_lastReadTurn?: number): string {
   return [
-    `⚠️ File content has changed since it was last read (turn ${lastReadTurn}).`,
+    `⚠️ File content has changed since it was last read.`,
     "The edit may overwrite newer content or the oldText no longer matches.",
     "Please re-read the file first with the read tool to get current content,",
     "then apply the edit with the exact current text as oldText.",
@@ -50,23 +54,25 @@ export function buildStalenessGuidance(lastReadTurn: number): string {
 
 /**
  * Build circuit break message for the LLM (7+ consecutive failures).
- * Pure function — no I/O.
+ *
+ * Cache-friendly: output is a fixed string per tool. The `consecutiveCount`
+ * and `errorDetails` parameters are accepted for backward compatibility
+ * but are NOT included in the output. Identical text is returned for
+ * 7+, 8+, 9+ failures — only the tool name varies.
  */
 export function buildCircuitBreakMessage(
   toolName: string,
-  consecutiveCount: number,
-  errorDetails: string,
+  _consecutiveCount?: number,
+  _errorDetails?: string,
 ): string {
   return [
-    `🔴 CIRCUIT BREAKER: Tool "${toolName}" has failed ${consecutiveCount} consecutive times.`,
+    `🔴 CIRCUIT BREAKER: Tool "${toolName}" has failed multiple consecutive times.`,
     "The current approach is not working and further retries will not help.",
     "Please switch to a completely different strategy:",
     "  • If editing: use the write tool to create a new version of the file",
     "  • If reading: verify the path exists (use ls or fffind)",
     "  • If running a command: simplify the command or check syntax",
     "  • Move on to a different task entirely",
-    "",
-    `Error details: ${errorDetails.slice(0, 200)}`,
   ].join("\n");
 }
 
@@ -74,12 +80,15 @@ export function buildCircuitBreakMessage(
 
 /**
  * Build edit_file loop guidance (3+ or 5+ consecutive failures).
- * Pure function — no I/O.
+ *
+ * Cache-friendly: returns one of two FIXED strings — "major" (5+ failures)
+ * or "minor" (3-4 failures). No attempt count is included in the output.
+ * Same threshold + tool state → same text.
  */
 export function buildEditLoopGuidance(consecutiveCount: number): string {
   if (consecutiveCount >= 5) {
     return [
-      `⚠️ This is attempt #${consecutiveCount} to edit the same file with the same arguments.`,
+      `⚠️ Repeated attempts to edit the same file with the same arguments have failed.`,
       "The edit is clearly not matching the current file content.",
       "Consider an alternative approach:",
       "  • Read the file first with the read tool, then re-apply the edit with exact text",
@@ -88,8 +97,8 @@ export function buildEditLoopGuidance(consecutiveCount: number): string {
     ].join("\n");
   }
   return [
-    `💡 Tip: ${consecutiveCount} consecutive failures on this file. `,
-    "The oldText may have whitespace differences (tabs vs spaces, trailing spaces). ",
+    `💡 Tip: Multiple consecutive failures on this file.`,
+    "The oldText may have whitespace differences (tabs vs spaces, trailing spaces).",
     "Read the file and check indentation carefully.",
   ].join("\n");
 }
@@ -114,16 +123,24 @@ export function ordinalSuffix(n: number): string {
  * Build sequential edit overlap guidance.
  *
  * Warns when consecutive edits target overlapping region of the same file
- * without an intervening read. Pure function — no I/O.
+ * without an intervening read.
+ *
+ * Cache-friendly: the `consecutiveCount` parameter is accepted for backward
+ * compatibility but is NOT included in the output. Same previous/current
+ * first lines + same file path → same string. Note: the categorical
+ * inputs themselves (filePath, prevOldTextFirstLine, currentOldTextFirstLine)
+ * ARE variable per session, but they are inputs from the model (file
+ * contents), not internal state — so identical model inputs produce
+ * identical guidance.
  */
 export function buildSequentialEditGuidance(
   prevOldTextFirstLine: string,
   currentOldTextFirstLine: string,
   filePath: string,
-  consecutiveCount: number,
+  _consecutiveCount?: number,
 ): string {
   return [
-    `⚠️ You are editing the same region of \`${filePath}\` for the ${ordinalSuffix(consecutiveCount)} consecutive time without re-reading.`,
+    `⚠️ You are editing the same region of \`${filePath}\` again without re-reading.`,
     `Previous edit targeted content starting with:`,
     `  "${prevOldTextFirstLine}"`,
     `This edit targets content starting with:`,
@@ -311,15 +328,20 @@ export function buildEditNonUniqueGuidance(
  * Build guidance for consecutive empty search results (find/grep/ls returning nothing).
  * Injected when the model searches for the same concept 3+ times with no results.
  *
- * Encourages the model to change strategy instead of retrying with minor pattern variations.
+ * Cache-friendly: output is a function of (pattern, toolName) only. The
+ * `consecutiveCount` parameter is accepted for backward compatibility but
+ * is NOT included in the output. Same pattern + same tool → same string.
+ * This is intentional: once the threshold is hit, the guidance should
+ * be stable across turns (the model gets the same "change strategy"
+ * reminder every time the loop continues).
  */
 export function buildEmptySearchGuidance(
   pattern: string,
-  consecutiveCount: number,
-  toolName: string,
+  _consecutiveCount?: number,
+  toolName?: string,
 ): string {
   const lines: string[] = [
-    `⚠️  ${toolName} "${pattern.slice(0, 80)}" returned no results ${consecutiveCount} times.`,
+    `⚠️  ${toolName ?? "search"} "${pattern.slice(0, 80)}" returned no results.`,
     `The search pattern is not matching any files.`,
     `Retrying with the same pattern (or minor variations) will keep failing.`,
     ``,
@@ -331,11 +353,11 @@ export function buildEmptySearchGuidance(
     `  • You may be looking in the wrong directory`,
     ``,
     `Try:`,
-    `  • Use ${consecutiveCount >= 5 ? "a different tool — " : ""}ls to list the parent directory and discover the actual filename`,
+    `  • Use ls to list the parent directory and discover the actual filename`,
     `  • Search for a shorter or more generic term (part of the name, not the full name)`,
     `  • Use read on a known nearby file to confirm the directory structure`,
     ``,
-    `Do NOT keep retrying the same ${toolName} pattern. Change strategy now.`,
+    `Do NOT keep retrying the same ${toolName ?? "search"} pattern. Change strategy now.`,
   ].join("\n");
   return lines;
 }

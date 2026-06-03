@@ -34,7 +34,7 @@ export function suggestAutoTimeout(
 
   if (!isLong && !hasPipes) return undefined;
 
-  // Pipe commands: known timeout enforcement bug in Claude Code and OpenCode
+  // Pipe commands: known timeout enforcement issue
   if (hasPipes) {
     if (currentTimeout === undefined || currentTimeout < 600) {
       return 600;

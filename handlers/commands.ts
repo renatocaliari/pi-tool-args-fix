@@ -4,7 +4,7 @@
  * All /repair-* commands registered here.
  */
 
-import { formatStats, RepairToggle } from "../stats.js";
+import { formatStats, formatCacheInfo, RepairToggle } from "../stats.js";
 import {
   readAllEvents,
   aggregateStats,
@@ -79,6 +79,19 @@ export function registerCommands(
         console.log("📊 Repair Stats (this session)");
         console.log(output);
         console.log("💡 Tip: run /repair-stats-global for all-session aggregate.");
+      }
+    },
+  });
+
+  // ─── Command: cache impact info ─────────────────────────────────
+  pi.registerCommand("repair-cache-info", {
+    description: "Show cache impact metrics for this session",
+    handler: async (_args: any, uiCtx: any) => {
+      const output = formatCacheInfo(stats);
+      if (uiCtx.hasUI) {
+        uiCtx.ui.notify(output, "info");
+      } else {
+        console.log(output);
       }
     },
   });
