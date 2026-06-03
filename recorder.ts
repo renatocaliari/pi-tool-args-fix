@@ -19,6 +19,7 @@ import { formatExample } from "./recorder/formatting.js";
 // Re-export from sub-modules for backward compatibility
 export { classifyErrorType, getToolHelp, getErrorGuidance, getSuggestion } from "./recorder/classifier.js";
 export { ConsecutiveFailureTracker } from "./recorder/tracker.js";
+export { ConsecutiveEmptySearchTracker } from "./recorder/empty-search-tracker.js";
 export { formatExample, formatSessionStats, formatGlobalStats, formatBlindspots } from "./recorder/formatting.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────

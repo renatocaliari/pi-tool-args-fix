@@ -23,6 +23,8 @@ generated_at: 2026-05-27
 | Scope | Type | Mutation Target |
 |-------|------|----------------|
 | repair-functions | test-unit | 70% |
+| barrel-contracts | test-contract | — (static) |
+| handler-wiring | test-smoke | — (static) |
 | extension-integration | test-integration | 50% |
 
 ## Coverage Results
@@ -40,7 +42,9 @@ generated_at: 2026-05-27
 | `recorder.test.ts` | 101 | 70% |
 | `stats.test.ts` | 23 | 50% |
 | `suggest-repairs.test.ts` | 21 | — |
-| **Total** | **397** | — |
+| `repairs/barrel-contract.test.ts` | 24 | — (static) |
+| `repairs/barrel-contract.test.ts` | 24 | — (contract + smoke) |
+| **Total** | **469** | — |
 
 ## Test Structure
 
@@ -112,9 +116,24 @@ npm run test:watch
 
 ## Next Steps
 1. Add integration tests for the extension itself (requires pi API mocking)
-2. Set up Stryker for mutation testing
-3. Add security scanning with ESLint
-4. Set up CI/CD pipeline with GitHub Actions
-5. ✅ Repair catalog created at `docs/repair-catalog.md`
-6. ✅ AGENTS.md updated with repair preservation instructions
-7. ✅ Coverage gaps documented (normal pass-through branches)
+2. ✅ Barrel contract tests (`repairs/barrel-contract.test.ts` — 24 tests)
+3. ✅ Handler wiring smoke tests (built into barrel-contract.test.ts)
+4. Set up Stryker for mutation testing (deferred — see evaluation below)
+5. Add security scanning with ESLint
+6. Set up CI/CD pipeline with GitHub Actions
+7. ✅ Repair catalog created at `docs/repair-catalog.md`
+8. ✅ AGENTS.md updated with repair preservation instructions
+9. ✅ Coverage gaps documented (normal pass-through branches)
+
+## Mutation Testing Evaluation
+
+**Veredito: Não implementar agora.**
+
+| Fator | Nota | Justificativa |
+|-------|------|---------------|
+| Cobertura atual | 🟢 98% branch | Mutantes seriam mortos pelos testes existentes |
+| Natureza do código | 🟢 Funções puras | Testes de borda já cobrem o que mutation revelaria |
+| Custo de setup | 🔴 Alto | Stryker + ESM + CI time, ~2-5x mais lento |
+| Risco real | 🟢 Baixo | 98% branch + 100% funções = poucos escapes |
+
+**Reavaliar quando:** houver lógica com estado (cache distribuído, decisão multi-passo) ou cobertura cair abaixo de 85%.

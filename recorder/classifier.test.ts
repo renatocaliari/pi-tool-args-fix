@@ -107,6 +107,36 @@ describe("classifyErrorType", () => {
     expect(classifyErrorType("must match pattern \"^[a-z]+$\"")).toBe("SCHEMA_VALIDATION");
   });
 
+  it("classifies INVALID_ARG for illegal/invalid option errors", () => {
+    expect(classifyErrorType("cat: illegal option -- A\nusage: cat [-belnstuv] [file ...]")).toBe("INVALID_ARG");
+    expect(classifyErrorType("unknown option -- foo")).toBe("INVALID_ARG");
+    expect(classifyErrorType("unrecognized argument: --bad-flag")).toBe("INVALID_ARG");
+    expect(classifyErrorType("unrecognized command line option: foo")).toBe("INVALID_ARG");
+    expect(classifyErrorType("invalid option -- 'Z'")).toBe("INVALID_ARG");
+  });
+
+  it("classifies BUILD_CONFLICT for directory-output errors", () => {
+    expect(classifyErrorType('go: build output "web" already exists and is a directory')).toBe("BUILD_CONFLICT");
+    expect(classifyErrorType("build output 'dist' already exists and is a directory")).toBe("BUILD_CONFLICT");
+  });
+
+  it("classifies GIT_REJECTED for git push/pull conflicts", () => {
+    expect(classifyErrorType("! [rejected]        master -> master (fetch first)")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("error: failed to push some refs to 'https://github.com/...'")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("Updates were rejected because the remote contains work that you do not have locally")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("hint: Updates were rejected because the remote contains work")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("![rejected] non-fast-forward")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("hint: Not possible to fast-forward, aborting.")).toBe("GIT_REJECTED");
+    expect(classifyErrorType("Updates were rejected because the tip of your current branch is behind")).toBe("GIT_REJECTED");
+  });
+
+  it("does not misclassify unrelated errors with partial keyword overlap", () => {
+    // "fetch" appears in "fetch first" but plain "fetch" should not trigger GIT_REJECTED
+    expect(classifyErrorType("fetch failed: connection refused")).toBeNull();
+    // "output" appears in "build output" but plain "some output" should not trigger BUILD_CONFLICT
+    expect(classifyErrorType("some output was unexpected")).toBeNull();
+  });
+
   it("does not classify non-schema errors as SCHEMA_VALIDATION", () => {
     expect(classifyErrorType("no such file: package.json")).not.toBe("SCHEMA_VALIDATION");
     expect(classifyErrorType("timeout: operation timed out")).not.toBe("SCHEMA_VALIDATION");
@@ -135,11 +165,13 @@ describe("getSuggestion", () => {
 // ─── getToolHelp ─────────────────────────────────────────────────────
 
 describe("getToolHelp", () => {
-  it("returns bash guidance", () => {
+  it("returns bash guidance without misleading exit-code-normal message", () => {
     const help = getToolHelp("bash");
     expect(help).toContain("bash");
-    expect(help).toContain("Exit code");
     expect(help).toContain("--help");
+    // Must NOT contain the misleading "exit code 1 is normal for grep" line
+    expect(help).not.toContain("Exit code 1");
+    expect(help).not.toContain("normal for grep");
   });
 
   it("returns grep guidance with exit code semantics", () => {
@@ -209,6 +241,28 @@ describe("getToolHelp", () => {
 
     it("returns null for empty string", () => {
       expect(getErrorGuidance("")).toBeNull();
+    });
+
+    it("returns INVALID_ARG guidance with macOS-specific advice", () => {
+      const g = getErrorGuidance("INVALID_ARG");
+      expect(g).toContain("invalid argument");
+      expect(g).toContain("GNU");
+      expect(g).toContain("macOS");
+      expect(g).toContain("--help");
+    });
+
+    it("returns BUILD_CONFLICT guidance with go build workaround", () => {
+      const g = getErrorGuidance("BUILD_CONFLICT");
+      expect(g).toContain("conflict");
+      expect(g).toContain("-o /dev/null");
+      expect(g).toContain("rm -rf");
+    });
+
+    it("returns GIT_REJECTED guidance with pull --rebase suggestion", () => {
+      const g = getErrorGuidance("GIT_REJECTED");
+      expect(g).toContain("rejected");
+      expect(g).toContain("pull --rebase");
+      expect(g).toContain("linear");
     });
   });
 

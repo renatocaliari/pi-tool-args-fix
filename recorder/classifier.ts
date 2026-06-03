@@ -106,8 +106,12 @@ export function getSuggestion(category: string, toolName: string): string {
  */
 export function classifyErrorType(errorText: string | null): string | null {
   if (!errorText) return null;
-  if (isEisdirError(errorText)) return "EISDIR";
   const lower = errorText.toLowerCase();
+  // Build/runtime conflicts — output path is a directory, port in use, etc.
+  // IMPORTANT: check BEFORE isEisdirError() since "is a directory" is a superset;
+  // BUILD_CONFLICT is more specific (build output, not a read).
+  if (lower.includes("already exists and is a directory") || lower.includes("build output")) return "BUILD_CONFLICT";
+  if (isEisdirError(errorText)) return "EISDIR";
   // "Tool X not found" errors: tool/extension not registered, not file-not-found
   if (lower.includes("tool ") && lower.includes(" not found")) return "TOOL_NOT_FOUND";
   if (lower.includes("no such file") || lower.includes("not found") || lower.includes("enoent")) return "ENOENT";
@@ -115,6 +119,10 @@ export function classifyErrorType(errorText: string | null): string | null {
   if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
   if (lower.includes("rate limit") || lower.includes("429")) return "rate_limit";
   if (lower.includes("bad request") || lower.includes("400")) return "bad_request";
+  // Invalid CLI arguments — wrong flag, unknown option, illegal option
+  if (lower.includes("illegal option") || lower.includes("unknown option") || lower.includes("unrecognized") || lower.includes("invalid option") || lower.includes("invalid argument")) return "INVALID_ARG";
+  // Git push/pull conflicts — rejected pushes, non-fast-forward
+  if (lower.includes("failed to push") || lower.includes("updates were rejected") || lower.includes("fetch first") || lower.includes("non-fast-forward") || lower.includes("non fast forward") || lower.includes("fast-forward")) return "GIT_REJECTED";
   // Edit text mismatch — model tried to replace text that doesn't match, is identical, is non-unique, or overlaps
   if (lower.includes("could not find the exact text") || lower.includes("could not find edits") || lower.includes("oldtext does not match") || lower.includes("replacement produced identical content") || lower.includes("no changes made to") || lower.includes("occurrences of the text") || lower.includes("overlap") || (lower.includes("found ") && lower.includes(" occurrences of edits["))) return "EDIT_MISMATCH";
   // Schema validation errors — model sent arguments that violate the tool's JSON schema
@@ -164,9 +172,9 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
         `  - Command not found or typo in command name\n` +
         `  - File or directory not found\n` +
         `  - Permission denied (not executable / restricted path)\n` +
-        `  - Invalid arguments to the command\n` +
-        `  - Exit code 1 is normal for grep (no matches), find (empty), diff (difference)\n` +
-        `To debug, try: running the command with simpler arguments, checking file paths, or using 'command --help'`
+        `  - Invalid arguments to the command (check flags and syntax)\n` +
+        `  - Environment issue (missing variable, wrong directory)\n` +
+        `To debug, try: running the command with simpler arguments, checking the exact error message, or using 'command --help'`
       );
     case "grep":
       return (
@@ -174,14 +182,29 @@ export function getToolHelp(toolName: string, failedCommand?: string): string {
         `\n  - Exit code 0: match(es) found` +
         `\n  - Exit code 1: no matches found (this is NORMAL, not an error)` +
         `\n  - Exit code 2: error (e.g. file not found, invalid pattern)` +
-        `\nTip: If the pattern wasn't found, try a broader pattern, check the file path, or use grep -i for case-insensitive search.`
+        `\nTip: If the pattern wasn't found, try a broader pattern, check the file path, or use grep -i for case-insensitive search.` +
+        `\n` +
+        `\n🔁 Alternatives if grep keeps returning nothing:` +
+        `\n  • The file may use a different name than expected (check exact spelling)` +
+        `\n  • The file may use snake_case, kebab-case, or a different path prefix` +
+        `\n  • Try listing the parent directory with ls first to see actual files` +
+        `\n  • Search for a shorter/more generic term (part of the name, not the full name)` +
+        `\n  • Use 'ls' to list a known directory containing the expected file`
       );
     case "find":
       return (
         `The find tool searches for files/directories matching criteria.` +
         `\n  - Exit code 0: results found (or no criteria matched)` +
         `\n  - Exit code 1: no files matched (this is NORMAL)` +
-        `\nTip: If nothing was found, try broadening the search path or using less restrictive filters.`
+        `\nTip: If nothing was found, try broadening the search path or using less restrictive filters.` +
+        `\n` +
+        `\n🔁 Alternatives if find keeps returning nothing:` +
+        `\n  • The file may use a different naming convention than expected` +
+        `\n  • Try searching for just PART of the filename, not the full name` +
+        `\n  • Use grep -r on a directory to search file contents` +
+        `\n  • List the parent directory with ls to discover actual filenames` +
+        `\n  • Check if the file is in a different location (use ls on sibling dirs)` +
+        `\nDo NOT keep retrying find with minor glob variations — change your strategy.`
       );
     case "ls":
       return (
@@ -255,6 +278,35 @@ export function getErrorGuidance(category: string, _toolName?: string): string |
         `\n  5. Unexpected extra field — remove fields not in the tool definition` +
         `\nTo fix: review each argument against the tool's parameter requirements.` +
         `\nTip: remove any optional fields you're unsure about — send only what's required.`
+      );
+    case "INVALID_ARG":
+      return (
+        `The command failed because of an invalid argument or flag.` +
+        `\nCommon causes:` +
+        `\n  - The flag doesn\'t exist on this platform (e.g. \`cat -A\` is GNU-only, not available on macOS)` +
+        `\n  - Typo in the flag name or value` +
+        `\n  - Wrong syntax (e.g. missing value after a flag)` +
+        `\nTo fix: check the command\'s usage with \`--help\` and use only flags that exist on your system.` +
+        `\nOn macOS, prefer native equivalents of GNU tools where possible.`
+      );
+    case "BUILD_CONFLICT":
+      return (
+        `The build command failed because of a file or directory conflict.` +
+        `\nCommon causes:` +
+        `\n  - Build output path is a directory (not a file) — use \`-o /dev/null\` or a different output path` +
+        `\n  - A stale output directory exists — remove it with \`rm -rf\` first` +
+        `\n  - Another process holds the file` +
+        `\nTo fix: specify a valid output path. For Go: \`go build -o /dev/null ./cmd/web/\`` +
+        `\nOr remove the stale output: \`rm -rf <output>\` before rebuilding.`
+      );
+    case "GIT_REJECTED":
+      return (
+        `Git rejected the push because the remote has commits the local branch doesn\'t.` +
+        `\nThis is normal when working in a shared branch — another push happened since your last pull.` +
+        `\nTo fix:` +
+        `\n  1. \`git pull --rebase origin <branch>\` to integrate remote changes` +
+        `\n  2. Then \`git push origin <branch>\` again` +
+        `\nThe rebase applies your local commits on top of the remote, keeping history linear.`
       );
     default:
       return null;

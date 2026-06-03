@@ -88,6 +88,7 @@ Context-aware help injected on tool failures, driven by `getToolHelp` + `getErro
 | **Circuit breaker** | `buildCircuitBreakMessage`, `buildEditLoopGuidance` | `CONSECUTIVE_LOOP` |
 | **Staleness** | `buildStalenessGuidance` | `EDIT_MISMATCH` (stale file) |
 | **Path validation** | `buildPathValidationGuidance` | `ENOENT` |
+| **Empty search loop** | `buildEmptySearchGuidance` | `EMPTY_RESULT` (find/grep/ls) |
 
 ---
 
@@ -106,7 +107,21 @@ Context-aware help injected on tool failures, driven by `getToolHelp` + `getErro
 
 ---
 
-## 5. Stats & Recording
+## 5. Empty Search Loop Detection (recorder/empty-search-tracker.ts)
+
+| Method | Purpose |
+|--------|---------|
+| `recordEmpty(pattern)` | Record an empty search result; increments concept-based counter |
+| `recordFound()` | Reset ALL counters (single hit breaks any loop) |
+| `getCount(pattern)` | Current consecutive empty count for this concept |
+| `isInEmptyLoop(pattern)` | True when 3+ empties on this concept |
+| `reset()` | Clear all state |
+
+**Key design:** Counts are keyed by **concept** (not tool + pattern). find "NavUnifiedDropdown" then grep "nav_unified_drop" share one count via 4-char fragment overlap. `recordFound()` resets all state.
+
+**Integration:** Phase 2.5 in the `tool_result` handler (`index.ts`). Injects `buildEmptySearchGuidance()` at 3+ consecutive empties before Phase 3 runs.
+
+## 6. Stats & Recording
 
 | Module | Key Exports | Purpose |
 |--------|-------------|---------|
@@ -114,6 +129,7 @@ Context-aware help injected on tool failures, driven by `getToolHelp` + `getErro
 | `recorder.ts` | `RepairEvent`, `AggregateStats`, `Blindspot` types + log I/O, aggregation, blindspot detection | JSONL persistence |
 | `recorder/classifier.ts` | `classifyErrorType`, `getToolHelp`, `getErrorGuidance` | Error classification + help text |
 | `recorder/tracker.ts` | `ConsecutiveFailureTracker` | Loop detection |
+| `recorder/empty-search-tracker.ts` | `ConsecutiveEmptySearchTracker` | Empty search loop detection |
 | `recorder/formatting.ts` | `formatExample`, `formatSessionStats`, `formatGlobalStats`, `formatBlindspots` | Output formatting |
 
 ---
