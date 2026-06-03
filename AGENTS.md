@@ -35,6 +35,17 @@
 
 ---
 
+## Don'ts
+
+- **Never modify `tool_result.content`** — breaks LLM prefix cache. Use `context` event side channel instead.
+- **Never touch content fields** (`command`, `code`, `oldText`, `newText`, `text`, `content`) — structural repairs only.
+- **Never add external runtime dependencies** — TypeScript + Vitest only.
+- **Never add repairs for external extension tools** (`agent_browser`, `web_search`, `fetch_content`) — generic `getToolHelp` only.
+- **Never rename or delete a repair function** without updating `docs/repair-catalog.md` and checking test coverage.
+- **Never commit code without tests** — every repair function needs colocated tests in `repairs/*.test.ts`.
+
+---
+
 ## Code Conventions
 
 - Follow existing patterns in the codebase. KISS, DRY, pure functions preferred. Delete dead code immediately. All code and identifiers in English.
