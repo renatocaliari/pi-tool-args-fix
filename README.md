@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-530_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-539_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining, no cache penalty.**
 
@@ -32,8 +32,6 @@ This extension is the harness fix. The patterns were observed and fixed from pro
 
 Production LLMs (DeepSeek V4, Mimo 2.5, and others) share a surprising pattern: most of their tool-calling failures come from a small, recurring set of structural mistakes — around a dozen patterns we've observed and fixed.
 
-| # | What the model emits | What the tool needs | Repair |
-|---|---------------------|---------------------|--------|
 | # | What the model emits | What the tool needs | Repair |
 |---|---------------------|---------------------|--------|
 | 1 | `{limit: null}` | omit the field entirely | Strip `null` from optional fields |
@@ -134,8 +132,8 @@ All guidance is injected via the `context` event (shallow copy of messages, push
 <br>
 
 - **Per-session JSONL logs** at `.pi/repair-log/<sessionId>.jsonl`
-- **7 commands** for live analysis: `/repair-on`, `/repair-off`, `/repair-toggle`, `/repair-stats-session`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
-- **28-field event schema** with error classification, blindspot detection, repair tracking
+- **8 commands** for live analysis: `/repair-on`, `/repair-off`, `/repair-toggle`, `/repair-stats-session`, `/repair-cache-info`, `/repair-stats-global`, `/repair-gaps`, `/repair-suggest`
+- **19-field event schema** with error classification, blindspot detection, repair tracking
 - **50-session retention** with auto-prune
 - **DuckDB queryable** — standard JSONL format
 - **Auto-evolution** — every session starts with a global overview; cross-command hints guide you from local stats → global stats → suggesting fixes upstream
@@ -471,7 +469,7 @@ Total: 1 blindspot(s) detected.
 
 ### Event Schema
 
-Every event is recorded as a JSONL line with 28 fields:
+Every event is recorded as a JSONL line with 19 fields:
 
 | Field | Type | Example |
 |-------|------|---------|
@@ -488,7 +486,7 @@ Every event is recorded as a JSONL line with 28 fields:
 | `blindspotCategory` | `string` | `"CONSECUTIVE_LOOP"` |
 | `inputKeys` | `string[]` | `["path", "edits"]` |
 
-Full schema: 30 fields including `sessionId`, `turnIndex`, `ts`, `inputNullKeys`, `inputExtraProps`, `repairSkipped`, `wouldHaveRepaired`.
+Full schema: 19 fields including `sessionId`, `turnIndex`, `ts`, `repairSkipped`, `wouldHaveRepaired`, `inputNullKeys`, `inputExtraProps`.
 
 ### Automated Analysis
 
@@ -569,7 +567,9 @@ pi-tool-repair-layer/
 │   └── context.ts            # Shared handler types
 ├── docs/repair-catalog.md    # Source of truth for all repair function signatures
 ├── testing-strategy.md       # Test coverage and mutation strategy
-├── *.test.ts                 # 530 tests across 20 files
+├── pi-coding-agent.d.ts      # Type declarations for pi runtime module
+├── tsconfig.json             # Strict TypeScript config
+├── *.test.ts                 # 539 tests across 20 files
 ├── scripts/hooks/pre-commit  # Pre-commit hook (vitest, opt-in via npm run setup:hooks)
 └── README.md                 # You are here
 ```
@@ -611,7 +611,7 @@ This creates a natural flow: start → inspect local stats → inspect global �
 ## 🤝 Contributing
 
 1. Fork → branch → PR
-2. Keep functions ≤50 lines, files ≤400 lines (coding standards)
+2. Keep functions ≤50 lines, files ≤400 lines (aspirational — larger files like `index.ts` have phased migration plans)
 3. Add tests for any new repair or handler phase
 4. Run `npx vitest run` before committing
 
