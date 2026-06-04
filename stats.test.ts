@@ -13,6 +13,7 @@ import {
   createStats,
   recordRepairs,
   formatStats,
+  formatCacheInfo,
 } from "./stats.js";
 
 // ─── RepairToggle Tests ────────────────────────────────────────────────
@@ -324,5 +325,65 @@ describe("formatStats", () => {
 
     expect(output).toContain("Total");
     expect(output).toContain("1");
+  });
+});
+
+// ─── formatCacheInfo Tests ─────────────────────────────────────────────
+
+describe("formatCacheInfo", () => {
+  it("returns 'no guidance' message when guidanceInjections is 0", () => {
+    const stats = createStats();
+    const output = formatCacheInfo(stats);
+
+    expect(output).toContain("No guidance injections this session");
+    expect(output).toContain("Guidance items queued: 0");
+  });
+
+  it("shows full output when guidanceInjections > 0", () => {
+    const stats = createStats();
+    stats.guidanceInjections = 5;
+    stats.totalCacheRead = 100_000;
+    stats.totalCacheWrite = 20_000;
+    stats.totalUncachedInput = 30_000;
+    const output = formatCacheInfo(stats);
+
+    expect(output).toContain("📊 Cache Impact");
+    expect(output).toContain("Guidance items queued: 5");
+    expect(output).toContain("LLM cache hit rate");
+    expect(output).toContain("Cache reads:");
+    expect(output).toContain("Cache writes:");
+    expect(output).toContain("Uncached:");
+    expect(output).toContain("Session cost so far:");
+    expect(output).toContain("vs no cache:");
+  });
+
+  it("calculates correct hit rate", () => {
+    const stats = createStats();
+    stats.guidanceInjections = 1;
+    stats.totalCacheRead = 60_000;
+    stats.totalCacheWrite = 20_000;
+    stats.totalUncachedInput = 20_000;
+    const output = formatCacheInfo(stats);
+
+    // totalInput = 100K, hit rate = 60%
+    expect(output).toContain("60.0% hit rate");
+  });
+
+  it("shows zero stats when no cache data", () => {
+    const stats = createStats();
+    stats.guidanceInjections = 1;
+    const output = formatCacheInfo(stats);
+
+    expect(output).toContain("Total input:    0");
+    expect(output).toContain("Session cost so far: $0.00");
+    expect(output).toContain("saving $0.00");
+  });
+
+  it("contains the 4-rule pattern description", () => {
+    const stats = createStats();
+    const output = formatCacheInfo(stats);
+
+    expect(output).toContain("4-rule pattern");
+    expect(output).toContain("static cutoff + one-shot + byte-deterministic + stable position");
   });
 });

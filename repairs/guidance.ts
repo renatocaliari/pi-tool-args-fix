@@ -6,8 +6,6 @@
  * broken approach.
  */
 
-import * as path from "node:path";
-
 // ─── Path Validation Guidance ──────────────────────────────────────────
 
 /**
@@ -16,7 +14,7 @@ import * as path from "node:path";
  */
 export function buildPathValidationGuidance(
   invalidPaths: string[],
-  toolName: string,
+  _toolName: string,
 ): string {
   const pathList = invalidPaths.map(p => `  - ${p}`).join("\n");
   return [
@@ -340,7 +338,7 @@ export function buildEmptySearchGuidance(
   _consecutiveCount?: number,
   toolName?: string,
 ): string {
-  const lines: string[] = [
+  const lines = [
     `⚠️  ${toolName ?? "search"} "${pattern.slice(0, 80)}" returned no results.`,
     `The search pattern is not matching any files.`,
     `Retrying with the same pattern (or minor variations) will keep failing.`,

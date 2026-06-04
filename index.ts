@@ -37,6 +37,7 @@ import {
 	buildEmptySearchGuidance,
 	buildEditLoopGuidance,
 	resolvePath,
+	REPAIRABLE_TOOLS,
 } from "./repairs.js";
 import { formatDirectoryListing } from "./repairs/directory.js";
 import { createStats, recordRepairs, RepairToggle } from "./stats.js";
@@ -105,6 +106,8 @@ function buildToolResultEvent(
 	wasHandled: boolean,
 	handleType: string | null,
 	inputKeysOverride?: string[],
+	repairSkipped = false,
+	wouldHaveRepaired: string[] = [],
 ): RepairEvent {
 	return {
 		ts: new Date().toISOString(),
@@ -116,6 +119,8 @@ function buildToolResultEvent(
 		model: ctx.model?.id ?? "unknown",
 		repairs: [],
 		wasRepaired: false,
+		repairSkipped,
+		wouldHaveRepaired,
 		executionFailed: err.hasError,
 		executionErrorType: err.executionErrorType,
 		wasHandled,
@@ -270,19 +275,49 @@ export default function (pi: ExtensionAPI) {
 
 	// ─── tool_call handler — pre-execution repair + validation ───────────
 	pi.on("tool_call", async (event, ctx) => {
-		if (!repairToggle.isEnabled()) return undefined;
+		const isOff = !repairToggle.isEnabled();
 
-		const T = ["read", "write", "edit", "bash", "read_file", "edit_file", "write_file",
-			"get_file_skeleton", "get_function", "replace_symbol", "find_symbol_references", "rename_symbol",
-			"ffgrep", "fffind", "agent_browser", "web_search", "fetch_content", "code_search", "subagent",
-			"ctx_execute", "ctx_execute_file", "ctx_fetch_and_index", "ctx_batch_execute", "ctx_index", "ctx_search",
-			"run_experiment", "log_experiment", "grep", "find", "ls"];
-		const repairableTools = new Set(T);
+		const repairableTools = REPAIRABLE_TOOLS;
 
 		if (!repairableTools.has(event.toolName)) return undefined;
 
 		const originalInput = event.input as Record<string, unknown>;
 		if (!originalInput || typeof originalInput !== "object") return undefined;
+
+		// When OFF: compute what WOULD have been repaired, then return early
+		if (isOff) {
+			const originalJson = JSON.stringify(originalInput);
+			const repaired = repairObjectFields(originalInput);
+			const withDefaults = applyRelationalDefaults(repaired);
+			const repairedJson = JSON.stringify(withDefaults);
+			const wouldHaveRepaired = originalJson !== repairedJson
+				? summarizeRepairs(originalInput, withDefaults)
+				: [];
+
+			eventSeq++;
+			recordEvent({
+				ts: new Date().toISOString(),
+				eventType: "tool_call",
+				sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+				turnIndex: eventSeq,
+				toolName: event.toolName,
+				provider: ctx.model?.provider ?? "unknown",
+				model: ctx.model?.id ?? "unknown",
+				repairs: [],
+				wasRepaired: false,
+				repairSkipped: true,
+				wouldHaveRepaired,
+				executionFailed: false,
+				executionErrorType: null,
+				wasHandled: false,
+				handleType: null,
+				blindspotCategory: null,
+				inputKeys: Object.keys(originalInput),
+				inputNullKeys: [],
+				inputExtraProps: [],
+			});
+			return undefined;
+		}
 
 		const originalJson = JSON.stringify(originalInput);
 
@@ -336,6 +371,8 @@ export default function (pi: ExtensionAPI) {
 					model: ctx.model?.id ?? "unknown",
 					repairs: [],
 					wasRepaired: false,
+					repairSkipped: false,
+					wouldHaveRepaired: [],
 					executionFailed: true,
 					executionErrorType: "ENOENT",
 					wasHandled: true,
@@ -362,26 +399,28 @@ export default function (pi: ExtensionAPI) {
 					if (stat.isDirectory()) {
 						const entries = await fs.readdir(resolved);
 						const { listingContent } = formatDirectoryListing(resolved, entries, event.toolName);
-						eventSeq++;
-						recordEvent({
-							ts: new Date().toISOString(),
-							eventType: "tool_result",
-							sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
-							turnIndex: eventSeq,
-							toolName: event.toolName,
-							provider: ctx.model?.provider ?? "unknown",
-							model: ctx.model?.id ?? "unknown",
-							repairs: ["directory fallback"],
-							wasRepaired: true,
-							executionFailed: false,
-							executionErrorType: null,
-							wasHandled: true,
-							handleType: "directory_fallback",
-							blindspotCategory: null,
-							inputKeys: Object.keys(originalInput),
-							inputNullKeys: [],
-							inputExtraProps: [],
-						});
+					eventSeq++;
+					recordEvent({
+						ts: new Date().toISOString(),
+						eventType: "tool_result",
+						sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+						turnIndex: eventSeq,
+						toolName: event.toolName,
+						provider: ctx.model?.provider ?? "unknown",
+						model: ctx.model?.id ?? "unknown",
+						repairs: ["directory fallback"],
+						wasRepaired: true,
+						repairSkipped: false,
+						wouldHaveRepaired: [],
+						executionFailed: false,
+						executionErrorType: null,
+						wasHandled: true,
+						handleType: "directory_fallback",
+						blindspotCategory: null,
+						inputKeys: Object.keys(originalInput),
+						inputNullKeys: [],
+						inputExtraProps: [],
+					});
 						return {
 							content: [{ type: "text" as const, text: listingContent }],
 							isError: false,
@@ -427,6 +466,8 @@ export default function (pi: ExtensionAPI) {
 							model: ctx.model?.id ?? "unknown",
 							repairs: [],
 							wasRepaired: false,
+							repairSkipped: false,
+							wouldHaveRepaired: [],
 							executionFailed: true,
 							executionErrorType: "EDIT_MISMATCH",
 							wasHandled: true,
@@ -474,6 +515,8 @@ export default function (pi: ExtensionAPI) {
 								model: ctx.model?.id ?? "unknown",
 								repairs: [],
 								wasRepaired: false,
+								repairSkipped: false,
+								wouldHaveRepaired: [],
 								executionFailed: true,
 								executionErrorType: "EDIT_MISMATCH",
 								wasHandled: true,
@@ -545,6 +588,8 @@ export default function (pi: ExtensionAPI) {
 			model: ctx.model?.id ?? "unknown",
 			repairs: repairSummary,
 			wasRepaired: originalJson !== repairedJson,
+			repairSkipped: false,
+			wouldHaveRepaired: [],
 			executionFailed: false,
 			executionErrorType: null,
 			wasHandled: false,
@@ -560,6 +605,8 @@ export default function (pi: ExtensionAPI) {
 
 	// ─── tool_result handler — analytics + guidance queue ──
 	pi.on("tool_result", async (event, ctx) => {
+		const isOff = !repairToggle.isEnabled();
+
 		// Phase 1: Classify error
 		let hasError = event.isError ?? false;
 		let executionErrorType: string | null = null;
@@ -616,16 +663,18 @@ export default function (pi: ExtensionAPI) {
 							// Always record the event for analytics
 							const emptyKey = `empty:${event.toolName}:${searchPattern}`;
 							err.blindspotCategory = null;
-							const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "empty_search_loop");
+							const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "empty_search_loop", undefined, isOff);
 							recordEvent(rec);
 							eventSeq++;
 
-							// Queue guidance via side channel (once per pattern)
-							queueGuidance(
-								emptyKey,
-								buildEmptySearchGuidance(searchPattern, undefined, event.toolName),
-								true,
-							);
+							// Queue guidance via side channel (once per pattern) — skip when toggle OFF
+							if (!isOff) {
+								queueGuidance(
+									emptyKey,
+									buildEmptySearchGuidance(searchPattern, undefined, event.toolName),
+									true,
+								);
+							}
 							// Return early — result already handled (event recorded, guidance queued).
 							// Prevents Phase 7 from recording a duplicate event.
 							return undefined;
@@ -647,8 +696,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (consecutiveCount >= 1 && err.executionErrorType !== "TOOL_NOT_FOUND") {
-				// Circuit-break (7+)
-				if (consecutiveCount >= 7) {
+				// Circuit-break (7+) — skip guidance when toggle OFF
+				if (consecutiveCount >= 7 && !isOff) {
 					queueGuidance(
 						`cb:${event.toolName}`,
 						buildCircuitBreakMessage(event.toolName, undefined, undefined),
@@ -656,15 +705,17 @@ export default function (pi: ExtensionAPI) {
 					);
 				}
 
-				// CLI guidance (1st failure per tool)
-				queueGuidance(
-					`cli:${event.toolName}`,
-					getToolHelp(event.toolName),
-					true,
-				);
+				// CLI guidance (1st failure per tool) — skip when toggle OFF
+				if (!isOff) {
+					queueGuidance(
+						`cli:${event.toolName}`,
+						getToolHelp(event.toolName),
+						true,
+					);
+				}
 
-				// Edit loop guidance (3+ failures on edit)
-				if ((event.toolName === "edit" || event.toolName === "edit_file") && consecutiveCount >= 3) {
+				// Edit loop guidance (3+ failures on edit) — skip when toggle OFF
+				if (!isOff && (event.toolName === "edit" || event.toolName === "edit_file") && consecutiveCount >= 3) {
 					queueGuidance(
 						`edit-loop:${event.toolName}:${consecutiveCount >= 5 ? "major" : "minor"}`,
 						buildEditLoopGuidance(consecutiveCount),
@@ -672,8 +723,8 @@ export default function (pi: ExtensionAPI) {
 					);
 				}
 
-				// Enhanced EDIT_MISMATCH guidance
-				if ((event.toolName === "edit" || event.toolName === "edit_file") && err.executionErrorType === "EDIT_MISMATCH") {
+				// Enhanced EDIT_MISMATCH guidance — skip when toggle OFF
+				if (!isOff && (event.toolName === "edit" || event.toolName === "edit_file") && err.executionErrorType === "EDIT_MISMATCH") {
 					const errorText = extractTextContent(event.content) ?? "";
 					const enhanced = await buildEditMismatchGuidanceText(event, errorText);
 					if (enhanced) {
@@ -688,16 +739,15 @@ export default function (pi: ExtensionAPI) {
 
 			if (consecutiveCount >= 1) {
 				err.blindspotCategory = null;
-				const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "cli_guidance", inputKeys);
+				const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "cli_guidance", inputKeys, isOff);
 				recordEvent(rec);
-				eventSeq++;
 				return undefined;
 			}
 		} else {
 			failureTracker.recordSuccess(event.toolName);
 		}
 
-		// Phase 4: Error-type guidance (first occurrence only)
+		// Phase 4: Error-type guidance (first occurrence only) — skip guidance when toggle OFF
 		if (err.executionErrorType) {
 			const guidanceKey = `cat:${event.toolName}:${err.executionErrorType}`;
 			let guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
@@ -714,12 +764,12 @@ export default function (pi: ExtensionAPI) {
 				if (translated) guidanceText = `❗ ${translated}\n\n${guidanceText}`;
 			}
 
-			if (guidanceText) {
+			if (guidanceText && !isOff) {
 				queueGuidance(guidanceKey, guidanceText, true);
 			}
 
 			err.blindspotCategory = null;
-			const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "category_guidance");
+			const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "category_guidance", undefined, isOff);
 			recordEvent(rec);
 			return undefined;
 		}
@@ -761,7 +811,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Phase 7: Record event
-		const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, false, null);
+		const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, false, null, undefined, isOff);
 		recordEvent(rec);
 		return undefined;
 	});
@@ -772,7 +822,7 @@ export default function (pi: ExtensionAPI) {
 	// array is what the LLM sees for this turn; `event.messages` itself is never
 	// touched, so the prefix stays byte-identical and DeepSeek's cache holds.
 	// Regression test: repairs.test.ts → "context handler returns new array reference".
-	pi.on("context", async (event, ctx) => {
+	pi.on("context", async (event, _ctx) => {
 		// Always accumulate LLM cache stats from message usage, regardless
 		// of whether we'll push guidance. This gives the user visibility
 		// into their actual cache hit rate via /repair-cache-info.

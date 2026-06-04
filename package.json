@@ -1,6 +1,6 @@
 {
   "name": "pi-tool-repair-layer",
-  "version": "1.7.1-alpha",
+  "version": "1.8.0-alpha",
   "description": "Intercepts tool calls and repairs common LLM argument mistakes before execution — null stripping, JSON parsing, array wrapping, markdown path cleanup, relational defaults, and schema-aware extra property stripping.",
   "type": "module",
   "main": "./index.ts",
@@ -23,11 +23,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
     "setup:hooks": "git config core.hooksPath scripts/hooks && chmod +x scripts/hooks/pre-commit && echo 'pre-commit hook installed. Bypass with: git commit --no-verify'"
   },
   "devDependencies": {
-    "vitest": "^3.1.1",
-    "@vitest/coverage-v8": "^3.1.1"
+    "@types/node": "^25.9.1",
+    "@vitest/coverage-v8": "^3.1.1",
+    "typescript": "^6.0.3",
+    "vitest": "^3.1.1"
   },
   "pi": {
     "extensions": [

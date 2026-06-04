@@ -50,7 +50,7 @@
 
 ## Architecture (summary)
 
-3-layer handler: `tool_call` (pre-execution repair + validate) + `tool_result` (analytics + guidance queue) + `context` (side-channel injection). 9 field-level repairs via `repairDispatchers` lookup table; 3 classification predicates; 8 constant sets. Full module map + execution order: `docs/architecture.md`.
+3-layer handler: `tool_call` (pre-execution repair + validate) + `tool_result` (analytics + guidance queue) + `context` (side-channel injection). 8 field-level repairs via `repairDispatchers` lookup table + 1 inline (null-like-to-undefined in `classifyField`); 3 classification predicates; 8 constant sets. Full module map + execution order: `docs/architecture.md`.
 
 ---
 

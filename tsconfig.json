@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "*.ts",
+    "handlers/**/*.ts",
+    "repairs/**/*.ts",
+    "recorder/**/*.ts",
+    "suggest-repairs/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".tsc-out",
+    "coverage",
+    "*.test.ts",
+    "**/*.test.ts"
+  ]
+}

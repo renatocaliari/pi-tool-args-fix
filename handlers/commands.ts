@@ -4,7 +4,7 @@
  * All /repair-* commands registered here.
  */
 
-import { formatStats, formatCacheInfo, RepairToggle } from "../stats.js";
+import { formatStats, formatCacheInfo } from "../stats.js";
 import {
   readAllEvents,
   aggregateStats,
@@ -14,7 +14,6 @@ import {
 } from "../recorder.js";
 import { generateSuggestions, formatSuggestions, composeIssueContent, buildIssueUrl } from "../suggest-repairs.js";
 import type { LLMConfig, PhaseCallback } from "../suggest-repairs.js";
-import type { RepairStats } from "../stats.js";
 import { exec } from "node:child_process";
 import { showProgress, clearProgress, showError, showInfo } from "./utils.js";
 import type { HandlerContext } from "./context.js";

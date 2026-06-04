@@ -10,7 +10,6 @@ import { cleanPathValue } from "./path-utils.js";
 import {
   tryParseJsonString,
   wrapAsArrayIfNeeded,
-  wrapObjectAsArrayIfNeeded,
   stripExtraPropertiesFromItems,
 } from "./array-utils.js";
 import {

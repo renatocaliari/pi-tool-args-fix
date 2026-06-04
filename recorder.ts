@@ -41,6 +41,19 @@ export interface RepairEvent {
   repairs: string[];
   wasRepaired: boolean;
 
+  /**
+   * True when the repair toggle was OFF at the time of this event.
+   * Analytics still recorded, but repairs + guidance were skipped.
+   */
+  repairSkipped: boolean;
+
+  /**
+   * When repairSkipped=true, lists what WOULD have been repaired
+   * if the toggle had been ON. Empty array when toggle was ON or
+   * when no repairs were needed.
+   */
+  wouldHaveRepaired: string[];
+
   // tool_result fields (null/undefined for tool_call events)
   executionFailed: boolean;
   executionErrorType: string | null;
@@ -76,12 +89,14 @@ export interface AggregateStats {
   totalRepairs: number;
   totalErrors: number;
   totalHandled: number;
+  totalSkipped: number;
   byTool: Record<
     string,
-    { calls: number; repairs: number; errors: number; handled: number }
+    { calls: number; repairs: number; errors: number; handled: number; skipped: number }
   >;
   byModel: Record<string, number>;
   byRepairType: Record<string, number>;
+  bySkippedRepairType: Record<string, number>;
   byErrorType: Record<string, number>;
 }
 
@@ -232,9 +247,11 @@ export function aggregateStats(events: RepairEvent[]): AggregateStats {
     totalRepairs: 0,
     totalErrors: 0,
     totalHandled: 0,
+    totalSkipped: 0,
     byTool: {},
     byModel: {},
     byRepairType: {},
+    bySkippedRepairType: {},
     byErrorType: {},
   };
 
@@ -245,7 +262,7 @@ export function aggregateStats(events: RepairEvent[]): AggregateStats {
 
     // Per-tool stats
     if (!stats.byTool[evt.toolName]) {
-      stats.byTool[evt.toolName] = { calls: 0, repairs: 0, errors: 0, handled: 0 };
+      stats.byTool[evt.toolName] = { calls: 0, repairs: 0, errors: 0, handled: 0, skipped: 0 };
     }
     stats.byTool[evt.toolName].calls++;
 
@@ -258,6 +275,20 @@ export function aggregateStats(events: RepairEvent[]): AggregateStats {
       const repairTypes = extractRepairTypes(evt.repairs);
       for (const type of repairTypes) {
         stats.byRepairType[type] = (stats.byRepairType[type] ?? 0) + 1;
+      }
+    }
+
+    // Skipped repair stats (toggle was OFF)
+    if (evt.repairSkipped) {
+      stats.totalSkipped++;
+      stats.byTool[evt.toolName].skipped++;
+
+      // Track what would have been repaired
+      for (const repair of evt.wouldHaveRepaired) {
+        const type = parseRepairType(repair);
+        if (type) {
+          stats.bySkippedRepairType[type] = (stats.bySkippedRepairType[type] ?? 0) + 1;
+        }
       }
     }
 

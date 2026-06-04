@@ -42,6 +42,7 @@ export function formatSessionStats(stats: AggregateStats): string {
   lines.push("─".repeat(40));
   lines.push(`Tool calls:           ${stats.totalCalls}`);
   lines.push(`Repairs applied:      ${stats.totalRepairs} (${pct(stats.totalRepairs, stats.totalCalls)})`);
+  lines.push(`Repairs skipped:      ${stats.totalSkipped} (${pct(stats.totalSkipped, stats.totalCalls)})`);
   lines.push(`Execution errors:     ${stats.totalErrors} (${pct(stats.totalErrors, stats.totalCalls)})`);
   lines.push(`Fallback handled:     ${stats.totalHandled}`);
   lines.push("");
@@ -52,12 +53,12 @@ export function formatSessionStats(stats: AggregateStats): string {
   );
   lines.push("By Tool:");
   lines.push(
-    `  ${"Tool".padEnd(20)} ${"Calls".padStart(5)} ${"Fixes".padStart(5)} ${"Errors".padStart(6)}`
+    `  ${"Tool".padEnd(20)} ${"Calls".padStart(5)} ${"Fixes".padStart(5)} ${"Skip".padStart(5)} ${"Errors".padStart(6)}`
   );
-  lines.push(`  ${"-".repeat(38)}`);
+  lines.push(`  ${"-".repeat(45)}`);
   for (const [tool, t] of toolEntries) {
     lines.push(
-      `  ${tool.padEnd(20)} ${String(t.calls).padStart(5)} ${String(t.repairs).padStart(5)} ${String(t.errors).padStart(6)}`
+      `  ${tool.padEnd(20)} ${String(t.calls).padStart(5)} ${String(t.repairs).padStart(5)} ${String(t.skipped).padStart(5)} ${String(t.errors).padStart(6)}`
     );
   }
 
@@ -69,6 +70,18 @@ export function formatSessionStats(stats: AggregateStats): string {
       (a, b) => b[1] - a[1]
     );
     for (const [type, count] of repairEntries.slice(0, 10)) {
+      lines.push(`  ${type.padEnd(24)} ${String(count).padStart(4)}`);
+    }
+  }
+
+  // Skipped repair types (toggle OFF)
+  if (Object.keys(stats.bySkippedRepairType).length > 0) {
+    lines.push("");
+    lines.push("Would-Have-Repaired (toggle OFF):");
+    const skippedEntries = Object.entries(stats.bySkippedRepairType).sort(
+      (a, b) => b[1] - a[1]
+    );
+    for (const [type, count] of skippedEntries.slice(0, 10)) {
       lines.push(`  ${type.padEnd(24)} ${String(count).padStart(4)}`);
     }
   }
@@ -90,6 +103,7 @@ export function formatGlobalStats(
   lines.push(`Sessions:             ${sessionCount}`);
   lines.push(`Tool calls:           ${stats.totalCalls}`);
   lines.push(`Repairs applied:      ${stats.totalRepairs} (${pct(stats.totalRepairs, stats.totalCalls)})`);
+  lines.push(`Repairs skipped:      ${stats.totalSkipped} (${pct(stats.totalSkipped, stats.totalCalls)})`);
   lines.push(`Execution errors:     ${stats.totalErrors} (${pct(stats.totalErrors, stats.totalCalls)})`);
   lines.push(`Fallback handled:     ${stats.totalHandled}`);
   lines.push("");
@@ -100,12 +114,12 @@ export function formatGlobalStats(
   );
   lines.push("By Tool:");
   lines.push(
-    `  ${"Tool".padEnd(20)} ${"Calls".padStart(6)} ${"Fixes".padStart(5)} ${"Errors".padStart(6)}`
+    `  ${"Tool".padEnd(20)} ${"Calls".padStart(6)} ${"Fixes".padStart(5)} ${"Skip".padStart(5)} ${"Errors".padStart(6)}`
   );
-  lines.push(`  ${"-".repeat(39)}`);
+  lines.push(`  ${"-".repeat(46)}`);
   for (const [tool, t] of toolEntries) {
     lines.push(
-      `  ${tool.padEnd(20)} ${String(t.calls).padStart(6)} ${String(t.repairs).padStart(5)} ${String(t.errors).padStart(6)}`
+      `  ${tool.padEnd(20)} ${String(t.calls).padStart(6)} ${String(t.repairs).padStart(5)} ${String(t.skipped).padStart(5)} ${String(t.errors).padStart(6)}`
     );
   }
   lines.push("");
@@ -129,6 +143,18 @@ export function formatGlobalStats(
       (a, b) => b[1] - a[1]
     );
     for (const [type, count] of repairEntries.slice(0, 10)) {
+      lines.push(`  ${type.padEnd(24)} ${String(count).padStart(4)}`);
+    }
+  }
+
+  // Skipped repair types (toggle OFF)
+  if (Object.keys(stats.bySkippedRepairType).length > 0) {
+    lines.push("");
+    lines.push("Would-Have-Repaired (toggle OFF):");
+    const skippedEntries = Object.entries(stats.bySkippedRepairType).sort(
+      (a, b) => b[1] - a[1]
+    );
+    for (const [type, count] of skippedEntries.slice(0, 10)) {
       lines.push(`  ${type.padEnd(24)} ${String(count).padStart(4)}`);
     }
   }

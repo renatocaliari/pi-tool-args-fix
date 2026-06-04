@@ -360,7 +360,7 @@ See `docs/cache-safety.md` for the full contract.
 | Command | Description |
 |---------|-------------|
 | `/repair-on` | Enable the repair layer (default) |
-| `/repair-off` | Disable — pass raw tool args through unrepaired |
+| `/repair-off` | Disable — skip structural repairs + guidance injection, but continue logging analytics |
 | `/repair-toggle` | Toggle repair layer on/off |
 | `/repair-stats-session` | In-memory stats for the current session |
 | `/repair-stats-global` | Aggregated stats across all logged sessions |
@@ -488,7 +488,7 @@ Every event is recorded as a JSONL line with 28 fields:
 | `blindspotCategory` | `string` | `"CONSECUTIVE_LOOP"` |
 | `inputKeys` | `string[]` | `["path", "edits"]` |
 
-Full schema: 28 fields including `sessionId`, `turnIndex`, `ts`, `inputNullKeys`, `inputExtraProps`.
+Full schema: 30 fields including `sessionId`, `turnIndex`, `ts`, `inputNullKeys`, `inputExtraProps`, `repairSkipped`, `wouldHaveRepaired`.
 
 ### Automated Analysis
 

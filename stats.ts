@@ -189,7 +189,7 @@ export function formatCacheInfo(stats: RepairStats): string {
     `─────────────────`,
     ``,
     `This extension's cache-safety contract:`,
-    `  Guidance injections: ${stats.guidanceInjections}  (post-execution, side-channel only)`,
+    `  Guidance items queued: ${stats.guidanceInjections}  (unique, post-execution, side-channel only)`,
     ``,
     `LLM cache hit rate (provider-reported):`,
     `  Total input:    ${formatTokens(totalInput)}`,
