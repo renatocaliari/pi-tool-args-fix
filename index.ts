@@ -5,7 +5,7 @@
  *
  * 1. tool_call  → pre-execution repair + validation, queues guidance
  * 2. tool_result → analytics only, queues guidance, returns undefined (history untouched)
- * 3. context    → injects queued guidance into deep copy (LLM sees it, no cache impact)
+ * 3. context    → injects queued guidance into shallow-copied messages (LLM sees it, no cache impact)
  *
  * Pre-execution repairs (null stripping, array wrapping, etc.) have ZERO cache impact.
  * Post-execution guidance NEVER enters the conversation history.
@@ -215,7 +215,7 @@ async function buildEditMismatchGuidanceText(
 /**
  * Minimal block message returned by pre-execution validators.
  * Always the same string — byte-identical across all sessions → cache-friendly.
- * The detailed guidance goes via pendingGuidance → context event → deep copy.
+ * The detailed guidance goes via pendingGuidance → context event → shallow copy.
  */
 const BLOCK_MESSAGE = "[repair-layer] blocked";
 
@@ -766,13 +766,16 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	// ─── context event handler — injects queued guidance via deep copy ──
+	// ─── context event handler — injects queued guidance via side channel ──
+	// Cache-stability invariant: we shallow-copy the messages array and ONLY push
+	// new entries. We never mutate existing message objects in place. The returned
+	// array is what the LLM sees for this turn; `event.messages` itself is never
+	// touched, so the prefix stays byte-identical and DeepSeek's cache holds.
+	// Regression test: repairs.test.ts → "context handler returns new array reference".
 	pi.on("context", async (event, ctx) => {
 		if (pendingGuidance.length === 0) return;
 
-		// Inject all queued guidance as user messages in the deep-copied messages array.
-		// These modifications affect ONLY what the LLM sees — they NEVER persist to
-		// the conversation history. This preserves the prefix for DeepSeek's cache.
+		// Shallow copy — push only, never mutate elements. See invariant above.
 		const messages = [...event.messages];
 		messages.push({
 			role: "user" as const,

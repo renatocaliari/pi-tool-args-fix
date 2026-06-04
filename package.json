@@ -22,7 +22,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "setup:hooks": "git config core.hooksPath scripts/hooks && chmod +x scripts/hooks/pre-commit && echo 'pre-commit hook installed. Bypass with: git commit --no-verify'"
   },
   "devDependencies": {
     "vitest": "^3.1.1",

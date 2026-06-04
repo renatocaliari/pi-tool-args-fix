@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-479_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-530_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining, no cache penalty.**
 
@@ -112,7 +112,7 @@ These aren't field repairs — they're runtime adjustments that make the agent m
 
 <br>
 
-All guidance is injected via the `context` event (deep copy of messages). The original `tool_result` content is never modified — the LLM sees the guidance, but the conversation prefix is preserved for cache hits.
+All guidance is injected via the `context` event (shallow copy of messages, push only). The original `tool_result` content is never modified — the LLM sees the guidance, but the conversation prefix is preserved for cache hits.
 
 | Guidance | Trigger | Delivery |
 |----------|---------|----------|
@@ -223,10 +223,11 @@ The extension uses three pi event handlers in sequence, each with a distinct res
 │  context event handler  (side-channel guidance)          │
 │                                                         │
 │  • Fires before every LLM call                          │
-│  • event.messages is a DEEP COPY — mutations don't      │
-│    affect the persistent conversation history           │
+│  • event.messages is shallow-copied (push only) —       │
+│    original elements are never mutated, so the          │
+│    persistent conversation history stays byte-identical │
 │  • Injects queued guidance from pendingGuidance[]        │
-│    into the deep copy                                    │
+│    into the shallow copy                                 │
 │  • LLM sees guidance — cache is never modified           │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -279,11 +280,11 @@ Traditional (cache-breaking):
 This extension (cache-preserving):
   tool runs → error → extension returns UNDEFINED → history UNCHANGED → cache hit
                                       ↓
-                        context event fires → deep copy of messages
+                        context event fires → shallow copy of messages
                                       ↓
-                        guidance injected into DEEP COPY → LLM sees it
+                        guidance pushed onto shallow copy → LLM sees it
                                       ↓
-                        deep copy is DISCARDED after LLM call
+                        shallow copy is DISCARDED after LLM call
                         persistent history still has original tool result
 ```
 
@@ -530,7 +531,8 @@ pi-tool-repair-layer/
 │   └── context.ts            # Shared handler types
 ├── docs/repair-catalog.md    # Source of truth for all repair function signatures
 ├── testing-strategy.md       # Test coverage and mutation strategy
-├── *.test.ts                 # 479 tests across 17 files
+├── *.test.ts                 # 530 tests across 20 files
+├── scripts/hooks/pre-commit  # Pre-commit hook (vitest, opt-in via npm run setup:hooks)
 └── README.md                 # You are here
 ```
 
@@ -574,6 +576,27 @@ This creates a natural flow: start → inspect local stats → inspect global �
 2. Keep functions ≤50 lines, files ≤400 lines (coding standards)
 3. Add tests for any new repair or handler phase
 4. Run `npx vitest run` before committing
+
+### Development Setup (optional)
+
+Install the pre-commit hook to run tests automatically before each commit:
+
+```bash
+npm run setup:hooks
+```
+
+This configures `core.hooksPath` to point at `scripts/hooks/`, which runs `npx vitest run` on staged changes. Bypass with `git commit --no-verify` for emergency hotfixes.
+
+### Cache-Safety Guards (for maintainers)
+
+Three test files pin the cache-safety and catalog contracts. **Run them before every PR:**
+
+| Test file | What it pins |
+|-----------|--------------|
+| `repairs.test.ts` (cache-safety section) | `tool_result` never mutates `event.content` (except the documented write-directory-fallback); `context` returns a new array reference; original `event.messages` is byte-identical turn-over-turn |
+| `repairs/test-coverage.test.ts` | Every exported function in `repairs/*.ts` is referenced in its colocated test file. Prevents silent dead-code from new refactors. |
+| `repairs/catalog-drift.test.ts` | `docs/repair-catalog.md` matches `repairs/dispatch.ts` and `repairs/classification.ts`. Catalog is the source of truth — if you rename a dispatcher, update BOTH. |
+| `extension-integration.test.ts` | Handler registration contract + full session_start → tool_call → tool_result → context lifecycle. Uses a fake `ExtensionAPI`. |
 
 **Want the easiest contribution?** Just use `/repair-suggest` in your own sessions. Every submitted Issue is a contribution that helps everyone.
 

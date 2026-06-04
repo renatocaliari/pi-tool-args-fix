@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Pre-commit hook for pi-tool-args-fix.
+#
+# Runs the test suite to catch broken commits before they reach CI.
+# Bypass with `git commit --no-verify` for emergency hotfixes.
+#
+# Install (one-time, per clone):
+#   git config core.hooksPath scripts/hooks
+#   chmod +x scripts/hooks/pre-commit
+#
+# Why this script:
+#   - Lives in scripts/hooks/ (tracked in git) instead of .git/hooks/ (gitignored).
+#   - core.hooksPath redirects git to find hooks here, so the hook travels
+#     with the repo and survives clones / re-checkouts.
+#   - No new runtime deps — uses `npx vitest`, already in devDependencies.
+
+set -euo pipefail
+
+# ─── Skip if no relevant files changed ─────────────────────────────────
+# Avoid running tests when only docs / non-code files are staged.
+# `--diff-filter=ACMR` includes Added, Copied, Modified, Renamed.
+STAGED_TS=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx' '*.json' '*.md' 2>/dev/null || true)
+
+if [ -z "$STAGED_TS" ]; then
+  echo "pre-commit: no TS/JSON/MD files staged — skipping tests."
+  exit 0
+fi
+
+echo "pre-commit: running vitest (staged files: $(echo "$STAGED_TS" | wc -l | tr -d ' '))..."
+
+# ─── Run tests ─────────────────────────────────────────────────────────
+# Use --reporter=dot for concise output. Tail the last 30 lines on failure
+# so the developer sees the relevant errors without scrolling.
+if npx vitest run --reporter=dot 2>&1 | tail -30; then
+  echo "pre-commit: tests passed ✓"
+  exit 0
+else
+  echo ""
+  echo "pre-commit: tests FAILED — commit blocked."
+  echo "Bypass with: git commit --no-verify"
+  exit 1
+fi
