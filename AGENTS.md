@@ -5,7 +5,7 @@
 
 ## Core Principles
 
-- **Cache preservation is non-negotiable.** Guidance never modifies `tool_result.content` (breaks LLM prefix cache). It is queued and injected via the `context` event side channel — shallow-copied messages array, push only. The `tool_result` write-directory-fallback (Phase 6) is the ONE documented exception. Full contract: `docs/cache-safety.md`.
+- **Cache preservation is non-negotiable.** The extension follows the 4-rule cache-safety pattern: (1) static cutoff, (2) one-shot per (kind, key), (3) byte-deterministic, (4) stable position. Pre-execution repairs have zero cache impact. Post-execution modifications to `tool_result.content` are allowed IF they follow all 4 rules — the write-directory-fallback (Phase 6) does. Guidance is queued and injected via the `context` event side channel — shallow-copied messages array, push only. Full contract: `docs/cache-safety.md`.
 - **Keep this file under 70-100 lines (sweet spot), 150 hard limit.** Every line competes for the agent's context budget. Move deep details to `docs/<topic>.md`.
 - **Only repair primary/builtin tools.** External extension tools (`agent_browser`, `web_search`, `fetch_content`) get generic guidance via `getToolHelp` — no field-level or arg-level fixes.
 - **Validate-then-repair.** Pure repair functions only fix structural arg issues (types, nulls, arrays), never content fields (`command`, `code`, `oldText`, `newText`).
@@ -39,7 +39,7 @@
 
 ## Don'ts
 
-- **Never modify `tool_result.content`** — breaks LLM prefix cache. Use `context` event side channel instead.
+- **Never modify `tool_result.content`** outside the 4-rule pattern — breaks LLM prefix cache. Modifications are allowed if they are static-cutoff, one-shot, byte-deterministic, and stable-position. The write-directory-fallback (Phase 6) follows this pattern.
 - **Never touch content fields** (`command`, `code`, `oldText`, `newText`, `text`, `content`) — structural repairs only.
 - **Never add external runtime dependencies** — TypeScript + Vitest only.
 - **Never add repairs for external extension tools** (`agent_browser`, `web_search`, `fetch_content`) — generic `getToolHelp` only.

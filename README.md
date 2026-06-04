@@ -269,7 +269,24 @@ Every modification to a `tool_result` changes the byte sequence of the conversat
 | Category | What | Cache Impact |
 |----------|------|-------------|
 | **Pre-execution repair** | Null stripping, array wrapping, boolean coercion, JSON parsing, path cleaning | **Zero** — args modified before the tool runs; conversation history is unchanged |
-| **Post-execution guidance** | Error help text, context about repairs, circuit breaker messages | Traditional approach: appended to tool result → **breaks cache** |
+| **Side-channel guidance** | Error help text, context about repairs, circuit breaker messages | **Zero** — queued, then pushed as a new user message in the `context` event (not appended to `tool_result`) |
+| **Write-directory fallback (Phase 6)** | Returns directory listing when `write` is called on a directory | **Zero** — original call would have errored (no prior cache prefix to invalidate) |
+
+### The 4-Rule Cache-Safety Pattern
+
+Post-execution modifications to `tool_result.content` are allowed IF they
+follow all four rules:
+
+| # | Rule | What it means |
+|---|------|---------------|
+| 1 | **Static cutoff** | Only modify content older than a threshold. Recent content stays byte-identical. |
+| 2 | **One-shot** | Same `(kind, key)` produces the same modification every turn. After the first occurrence, no further modifications. |
+| 3 | **Byte-deterministic** | Pure function of inputs. No timestamps, random IDs, env vars, or non-deterministic data. |
+| 4 | **Stable position** | Modifications happen at the same position in the byte sequence turn-over-turn. |
+
+If all 4 hold, the modified content is cache-stable — the LLM provider's
+prefix cache hits on every subsequent turn with the same input. See
+[`docs/cache-safety.md`](./docs/cache-safety.md) for the full contract.
 
 ### The Solution: Side-Channel Guidance
 
@@ -292,25 +309,46 @@ Key principles:
 1. **One-shot injection**: Each guidance kind fires **once per session**. Subsequent identical errors pass through unchanged → cache hit.
 2. **Deterministic guidance strings**: Same error always produces the same guidance text → byte-stable across sessions.
 3. **Minimal block messages**: Pre-execution validators (path check, staleness, overlap) block tools with a fixed `"[repair-layer] blocked"` string — always byte-identical.
-4. **Analytics-only tool_result**: The `tool_result` handler never modifies `event.content`. It only classifies errors, queues guidance, and records events to JSONL.
+4. **Shallow copy + push only**: The `context` event shallow-copies `event.messages` and pushes ONE new user message. Original elements are never mutated.
+
+### Coexistence With Other Extensions
+
+Multiple pi extensions modify `tool_result.content`. All are cache-safe IF
+they follow the 4-rule pattern. Known coexisting extensions:
+
+- [`condensed-milk`](https://github.com/tomooshi/condensed-milk-pi) — retroactively masks old tool results (static cutoff)
+- [`pi-tscg`](https://pi.dev/packages/pi-tscg) — tool-result compression (deterministic per-tool strategy)
+- [`pi-rtk`](https://github.com/codexstar69/pi-rtk) — strips noise from 22 filter modules (per-tool, deterministic)
+- [`filter-output`](https://github.com/michalvavra/agents/blob/main/agents/pi/extensions/filter-output.ts) — redacts API keys (deterministic regex)
+
+The order of `pi.on("tool_result", ...)` hooks matters but is safe — all
+extensions are deterministic, so the combined output is cache-stable.
 
 ### Cache Metrics
 
-Track injection impact with `/repair-cache-info`:
+Track cache hit rate with `/repair-cache-info`:
 
 ```
 > /repair-cache-info
 
 📊 Cache Impact
 ─────────────────
-Guidance injections: 3
-Each injection means the tool_result text differs from what it would be
-without this extension, potentially invalidating DeepSeek's 64-token
-block cache for subsequent tokens.
 
-Note: pre-execution repairs (null stripping, array wrapping, etc.)
-have ZERO cache impact — they modify args before the tool executes.
-Only post-execution guidance injection affects the conversation prefix.
+This extension's cache-safety contract:
+  Guidance injections: 0  (post-execution, side-channel only)
+
+LLM cache hit rate (provider-reported):
+  Total input:    75.4K
+  Cache reads:    45.1K (60% hit rate) @ $0.50/M = $0.02
+  Cache writes:   12.3K (16% of total) @ $6.25/M = $0.08
+  Uncached:       17.9K @ $5.00/M = $0.09
+
+Session cost so far: $0.19
+vs no cache:         $0.38 (saving $0.19)
+
+Cache contract: this extension follows the 4-rule pattern
+(static cutoff + one-shot + byte-deterministic + stable position).
+See `docs/cache-safety.md` for the full contract.
 ```
 
 ---
@@ -596,6 +634,7 @@ Three test files pin the cache-safety and catalog contracts. **Run them before e
 | `repairs.test.ts` (cache-safety section) | `tool_result` never mutates `event.content` (except the documented write-directory-fallback); `context` returns a new array reference; original `event.messages` is byte-identical turn-over-turn |
 | `repairs/test-coverage.test.ts` | Every exported function in `repairs/*.ts` is referenced in its colocated test file. Prevents silent dead-code from new refactors. |
 | `repairs/catalog-drift.test.ts` | `docs/repair-catalog.md` matches `repairs/dispatch.ts` and `repairs/classification.ts`. Catalog is the source of truth — if you rename a dispatcher, update BOTH. |
+
 | `extension-integration.test.ts` | Handler registration contract + full session_start → tool_call → tool_result → context lifecycle. Uses a fake `ExtensionAPI`. |
 
 **Want the easiest contribution?** Just use `/repair-suggest` in your own sessions. Every submitted Issue is a contribution that helps everyone.

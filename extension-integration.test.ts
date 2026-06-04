@@ -307,3 +307,4 @@ describe("extension integration — session_shutdown", () => {
     ).resolves.not.toThrow();
   });
 });
+

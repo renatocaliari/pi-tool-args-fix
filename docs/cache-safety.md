@@ -4,50 +4,71 @@
 
 This document is the single source of truth for the LLM prefix-cache safety
 guarantees of the repair-layer extension. If you change the contract here,
-update the cache-safety tests in `repairs.test.ts` accordingly.
+update the cache-safety tests in `repairs.test.ts` and the integration tests
+in `extension-integration.test.ts` accordingly.
 
 ## TL;DR
 
-- **The extension NEVER modifies `tool_result.content`** for any normal flow.
-- The ONE documented exception is the `write` directory-fallback (Phase 6),
-  which returns a directory listing when the user mistakenly targets a
-  directory. The cache prefix for that tool result has no prior entries, so
-  cache impact is zero.
-- The `context` event returns a **shallow-copied** messages array (push only).
-  The original `event.messages` is byte-identical turn-over-turn → cache hit.
+- Pre-execution repairs (tool_call handler) have **zero cache impact** —
+  they modify args BEFORE the tool runs.
+- Post-execution modifications to `tool_result.content` are **allowed**
+  if they follow all 4 rules of the cache-safety pattern.
+- The `context` event returns a **shallow-copied** messages array
+  (push only). Original `event.messages` stays byte-identical turn-over-turn.
+- Cache hit rate is **tracked** in stats and exposed via `/repair-cache-info`
+  (provider-reported via `usage.cacheRead` / `usage.cacheWrite`).
 
-## The Problem We Solve
+## The 4-Rule Cache-Safety Pattern
 
-LLM providers implement prefix caching: identical conversation prefixes bypass
-recomputation. On DeepSeek V4 Flash this is a **50×** cost difference
-($0.0028 vs $0.14 per million tokens). Every modification to a `tool_result`
-breaks the prefix from that point forward.
+Any modification to `tool_result.content` (or any other LLM-visible byte
+sequence) must follow ALL FOUR rules to be cache-safe:
 
-A naive implementation would "helpfully" append guidance to the tool result
-when the tool failed. That breaks the cache for every subsequent turn.
+| # | Rule | What it means |
+|---|------|---------------|
+| 1 | **Static cutoff** | Only modify content older than a threshold. Recent content stays byte-identical. |
+| 2 | **One-shot** | Same `(kind, key)` produces the same modification every turn. After the first occurrence, no further modifications. |
+| 3 | **Byte-deterministic** | Pure function of inputs. No timestamps, random IDs, env vars, or non-deterministic data. |
+| 4 | **Stable position** | Modifications happen at the same position in the byte sequence turn-over-turn. |
 
-## The Solution: Side-Channel Guidance
+If all 4 hold, the modified content is **cache-stable** — the LLM provider's
+prefix cache hits on every subsequent turn with the same input.
 
-```
-Traditional (cache-breaking):
-  tool runs → error → extension APPENDS guidance to tool_result
-                                → history MODIFIED → cache miss
+If ANY rule is violated, the modification is **cache-breaking** — every
+subsequent turn with the same input will miss the cache.
 
-This extension (cache-preserving):
-  tool runs → error → extension returns UNDEFINED → history UNCHANGED
-                                → cache hit
-                                  ↓
-                  context event fires → shallow copy of messages
-                                  ↓
-                  guidance pushed onto shallow copy → LLM sees it
-                                  ↓
-                  shallow copy is DISCARDED after LLM call
-                  persistent history still has original tool result
-```
+## What This Extension Does (and Why It's Cache-Safe)
 
-## The Invariant (Pinned by Tests)
+### Phase 1-5: Analytics + Guidance Queue (side-channel, cache-safe)
 
-The `context` handler in `index.ts` does exactly three things:
+Phases 1-5 of the `tool_result` handler:
+- Classify errors
+- Track consecutive failures
+- Detect empty results
+- Update content hash cache
+- Queue guidance via `pendingGuidance[]`
+
+**All return undefined** for normal flows. The LLM never sees modified
+`tool_result.content` from these phases. The only thing that flows to the
+LLM is the side-channel `pendingGuidance` array, which is pushed as a
+new user message in the `context` event (NOT appended to tool_result).
+
+### Phase 6: Write-Directory Fallback (one-shot, cache-safe)
+
+When `write` is called on a directory, the handler returns a directory
+listing instead of the original error. See `repairs/directory.ts`.
+
+**Conformance to the 4 rules**:
+- **Static cutoff**: N/A (only fires on first encounter of the error condition)
+- **One-shot**: same directory always produces same listing
+- **Byte-deterministic**: directory contents are stable
+- **Stable position**: listing format is fixed
+
+Cache impact: **zero** — the original tool call would have returned an
+error (no prior cache prefix), so the rewrite doesn't invalidate anything.
+
+### Context Event: Side-Channel Guidance (always cache-safe)
+
+The `context` event handler:
 
 ```typescript
 const messages = [...event.messages];  // 1. Shallow copy the array
@@ -63,31 +84,10 @@ return { messages };                    // 4. Return new array
 We only push a new element to the shallow copy. The original array and all
 its message objects stay byte-identical.
 
-The `tool_result` handler returns `undefined` for ALL normal flows. It only
-classifies errors, queues guidance, and records events to JSONL. It never
-returns a `{ content: [...] }` payload.
-
-## The One Documented Exception
-
-`tool_result` Phase 6 (write-directory-fallback):
-
-```typescript
-if (stat.isDirectory()) {
-  const { listingContent } = formatDirectoryListing(resolved, entries, "write");
-  return { content: [{ type: "text" as const, text: listingContent }], isError: false };
-}
-```
-
-When the user calls `write` on an existing directory (a user error), the
-extension returns a directory listing instead of failing. This IS a content
-mutation, but it's safe because:
-1. The original `write` call would have returned an error, so there's no
-   prior cache prefix to invalidate.
-2. The mutation is deterministic (same directory → same listing).
-3. It's a fallback, not a normal flow.
-
-The cache-safety test in `repairs.test.ts` pins this exception explicitly so
-future refactors don't accidentally generalize it.
+Plus: **cache analytics accumulation**. The handler always iterates
+`event.messages` to extract `usage.cacheRead` / `usage.cacheWrite` from
+assistant messages, regardless of whether guidance is being pushed. This
+gives the user visibility into their actual cache hit rate.
 
 ## Why Shallow Copy, Not Deep Copy
 
@@ -104,12 +104,38 @@ conversation size. For long sessions (10K+ messages), this adds up.
 Shallow copy with the "push only" invariant is the right trade-off:
 - O(1) cost per turn
 - Cache-safe as long as the invariant holds
-- The invariant is pinned by the `cache-safety` section in `repairs.test.ts`
+- The invariant is pinned by tests in `repairs.test.ts` and
+  `extension-integration.test.ts`
 
 If you change the invariant (e.g., decide to mutate messages), you MUST:
 1. Update this document.
 2. Update the test in `repairs.test.ts` to match.
-3. Re-think the cache implications.
+3. Update the integration tests in `extension-integration.test.ts`.
+4. Re-think the cache implications.
+
+## Coexistence With Other Extensions
+
+Multiple pi extensions in the wild modify `tool_result.content`. The
+order of `pi.on("tool_result", ...)` hooks matters:
+
+```
+[other extension 1] → [us] → [other extension 2] → [LLM sees final]
+```
+
+If we run first: we clean our noise, then others see cleaner content.
+If we run second: we see what others produced, then clean OUR noise on top.
+
+**All are safe IF all follow the 4 rules.** Static cutoff + one-shot +
+byte-deterministic + stable position compose: the combined output is
+still cache-stable.
+
+Known coexisting extensions:
+- **`condensed-milk`** — retroactively masks old tool results (static cutoff)
+- **`pi-tscg`** — tool-result compression (deterministic per-tool strategy)
+- **`pi-rtk`** — strips noise from 22 filter modules (per-tool, deterministic)
+- **`filter-output`** (michalvavra/agents) — redacts API keys (deterministic regex)
+
+All four follow the 4-rule pattern. They can run alongside us.
 
 ## One-Shot Guidance
 
@@ -145,9 +171,33 @@ data in the guidance strings.
 This is what makes the cache work: if the LLM sees the same error twice
 across sessions, the guidance is byte-identical, so the cache hits.
 
+## Cache Hit Rate Tracking
+
+The `context` handler accumulates cache stats from assistant message
+`usage` fields:
+
+```typescript
+for (const m of event.messages) {
+  const msg = (m as any)?.message ?? m;
+  if (msg?.role === "assistant" && msg?.usage) {
+    const u = msg.usage;
+    stats.totalCacheRead += u.cacheRead ?? 0;
+    stats.totalCacheWrite += u.cacheWrite ?? 0;
+    stats.totalUncachedInput += u.input ?? 0;
+  }
+}
+```
+
+Exposed via `/repair-cache-info`:
+- Hit rate = `totalCacheRead / (totalCacheRead + totalCacheWrite + totalUncachedInput)`
+- Cost estimate: based on Anthropic pricing (cache reads at 10%, writes at 125%, uncached at 100% of base)
+
+Per Claude's docs: "We run alerts on our prompt cache hit rate and declare
+SEVs if they're too low." Same metric, exposed via the same command.
+
 ## What This Document Does NOT Cover
 
-- **Pre-execution repairs** (tool_call handler) — these modify args BEFORE the
+- **Pre-execution repairs** (tool_call handler) — modify args BEFORE the
   tool runs, never touching `tool_result.content`. Always cache-safe by
   construction.
 - **The `tool_result` analytics path** — records events to JSONL at
@@ -155,12 +205,23 @@ across sessions, the guidance is byte-identical, so the cache hits.
   the LLM's view of the conversation. Not a cache concern.
 - **The pre-commit hook** — runs vitest on staged changes. Runs in the
   developer's shell, not in the LLM context. Not a cache concern.
+- **pi tool driver UI logs** — diagnostic messages that may appear in
+  pi's chat UI are emitted by the driver, NOT in `tool_result.content`.
+  Our hook doesn't see them. They are a display-layer artifact, not an
+  LLM-cache concern.
 
 ## References
 
-- `index.ts` lines 770-790 — the `context` handler (the contract in code)
+- `index.ts` lines 770-810 — the `context` handler (the contract in code)
+- `index.ts` lines 770-810 — the `context` handler (the contract in code)
 - `repairs.test.ts` "cache-safety" section — the tests that pin the contract
+- `extension-integration.test.ts` — end-to-end lifecycle
 - `README.md` "Cache Strategy" — user-facing explanation
-- `/Users/cali/.local/share/opencode/storage/message/...` — DeepSeek V4
-  Flash 50× cache cost example
-- Anthropic Claude prompt caching docs — cache hit pricing (10% of base)
+- `stats.ts` `formatCacheInfo` — cache hit rate display
+- [Claude prompt caching docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- [Lessons from building Claude Code: Prompt caching is everything](https://claude.com/blog/lessons-from-building-claude-code-prompt-caching-is-everything)
+- [Anthropic cache diagnostics](https://platform.claude.com/docs/en/build-with-claude/cache-diagnostics)
+- [Pi extension API](https://pi.dev/docs/latest/extensions)
+- [pi-tscg](https://pi.dev/packages/pi-tscg) — coexisting tool-result compression
+- [pi-rtk](https://github.com/codexstar69/pi-rtk) — coexisting tool output transformer
+- [condensed-milk](https://github.com/tomooshi/condensed-milk-pi) — coexisting retro-masker

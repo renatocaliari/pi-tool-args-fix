@@ -558,7 +558,7 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	// ─── tool_result handler — analytics + guidance queue (NEVER modifies content) ──
+	// ─── tool_result handler — analytics + guidance queue ──
 	pi.on("tool_result", async (event, ctx) => {
 		// Phase 1: Classify error
 		let hasError = event.isError ?? false;
@@ -773,6 +773,24 @@ export default function (pi: ExtensionAPI) {
 	// touched, so the prefix stays byte-identical and DeepSeek's cache holds.
 	// Regression test: repairs.test.ts → "context handler returns new array reference".
 	pi.on("context", async (event, ctx) => {
+		// Always accumulate LLM cache stats from message usage, regardless
+		// of whether we'll push guidance. This gives the user visibility
+		// into their actual cache hit rate via /repair-cache-info.
+		//
+		// Source: `usage.cacheRead` and `usage.cacheWrite` on assistant
+		// messages (set by the LLM provider each turn).
+		// Per Claude's docs: "We run alerts on our prompt cache hit rate."
+		for (const m of event.messages) {
+			const msg = (m as any)?.message ?? m;
+			if (msg?.role === "assistant" && msg?.usage) {
+				const u = msg.usage;
+				stats.totalCacheRead += u.cacheRead ?? 0;
+				stats.totalCacheWrite += u.cacheWrite ?? 0;
+				stats.totalUncachedInput += u.input ?? 0;
+			}
+		}
+
+		// If no guidance queued, return undefined (no-op, no array copy).
 		if (pendingGuidance.length === 0) return;
 
 		// Shallow copy — push only, never mutate elements. See invariant above.

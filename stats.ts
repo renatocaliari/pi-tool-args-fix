@@ -79,6 +79,21 @@ export interface RepairStats {
   totalRepairs: number;
   sequentials: number; // sequential edit overlap detections
   guidanceInjections: number; // total guidance injections this session (cache breaks)
+  /**
+   * LLM provider-reported cache usage, accumulated across all turns in
+   * this session. Read from `usage.cacheRead` / `usage.cacheWrite` on
+   * assistant messages during the `context` event.
+   *
+   * `totalCacheRead` = tokens served from the provider's prefix cache
+   * `totalCacheWrite` = tokens written to the cache for future hits
+   *
+   * Hit rate = totalCacheRead / (totalCacheRead + totalCacheWrite + uncachedInput)
+   * Per Claude's docs: "We run alerts on our prompt cache hit rate and
+   * declare SEVs if they're too low." This is the same metric.
+   */
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  totalUncachedInput: number;
 }
 
 /**
@@ -111,6 +126,9 @@ export function createStats(): RepairStats {
     totalRepairs: 0,
     sequentials: 0,
     guidanceInjections: 0,
+    totalCacheRead: 0,
+    totalCacheWrite: 0,
+    totalUncachedInput: 0,
   };
 }
 
@@ -139,23 +157,73 @@ export function recordRepairs(
  */
 /**
  * Format cache impact info for the session.
+ *
+ * Shows two things:
+ *   1. This extension's cache-safety contract: how many guidance injections
+ *      have been queued this session
+ *   2. LLM provider cache hit rate (from assistant message `usage` data)
+ *
+ * The 4-rule cache-safety pattern is documented in `docs/cache-safety.md`.
  */
 export function formatCacheInfo(stats: RepairStats): string {
-  if (stats.guidanceInjections === 0) {
-    return "No guidance injections this session — no cache impact from this extension.";
-  }
-  return [
+  const totalInput = stats.totalCacheRead + stats.totalCacheWrite + stats.totalUncachedInput;
+  const hitRate = totalInput > 0 ? (stats.totalCacheRead / totalInput) * 100 : 0;
+  const writeRate = totalInput > 0 ? (stats.totalCacheWrite / totalInput) * 100 : 0;
+
+  // Per Claude's pricing (rough, for illustration):
+  //   cache reads:  10% of base input
+  //   cache writes: 125% of base input (5 minute cache); 200% (1 hour)
+  //   uncached:     100% of base
+  // Cache reads at 0.1x, writes at 1.25x, uncached at 1.0x of base.
+  const PRICE_BASE = 5; // $/MTok uncached
+  const priceCacheRead = (stats.totalCacheRead / 1_000_000) * PRICE_BASE * 0.1;
+  const priceCacheWrite = (stats.totalCacheWrite / 1_000_000) * PRICE_BASE * 1.25;
+  const priceUncached = (stats.totalUncachedInput / 1_000_000) * PRICE_BASE;
+  const actualCost = priceCacheRead + priceCacheWrite + priceUncached;
+  // What would the cost be with NO cache at all?
+  const noCacheCost = (totalInput / 1_000_000) * PRICE_BASE;
+  const savings = noCacheCost - actualCost;
+
+  const lines: string[] = [
     `📊 Cache Impact`,
     `─────────────────`,
-    `Guidance injections: ${stats.guidanceInjections}`,
-    `Each injection means the tool_result text differs from what it would be`,
-    `without this extension, potentially invalidating DeepSeek's 64-token`,
-    `block cache for subsequent tokens.`,
     ``,
-    `Note: pre-execution repairs (null stripping, array wrapping, etc.)`,
-    `have ZERO cache impact — they modify args before the tool executes.`,
-    `Only post-execution guidance injection affects the conversation prefix.`,
-  ].join("\n");
+    `This extension's cache-safety contract:`,
+    `  Guidance injections: ${stats.guidanceInjections}  (post-execution, side-channel only)`,
+    ``,
+    `LLM cache hit rate (provider-reported):`,
+    `  Total input:    ${formatTokens(totalInput)}`,
+    `  Cache reads:    ${formatTokens(stats.totalCacheRead)} (${hitRate.toFixed(1)}% hit rate) @ $${PRICE_BASE * 0.1}/M = $${priceCacheRead.toFixed(2)}`,
+    `  Cache writes:   ${formatTokens(stats.totalCacheWrite)} (${writeRate.toFixed(1)}% of total) @ $${PRICE_BASE * 1.25}/M = $${priceCacheWrite.toFixed(2)}`,
+    `  Uncached:       ${formatTokens(stats.totalUncachedInput)} @ $${PRICE_BASE}/M = $${priceUncached.toFixed(2)}`,
+    ``,
+    `Session cost so far: $${actualCost.toFixed(2)}`,
+    `vs no cache:         $${noCacheCost.toFixed(2)} (saving $${savings.toFixed(2)})`,
+    ``,
+    `Cache contract: this extension follows the 4-rule pattern`,
+    `(static cutoff + one-shot + byte-deterministic + stable position).`,
+    `See \`docs/cache-safety.md\` for the full contract.`,
+  ];
+
+  if (stats.guidanceInjections === 0) {
+    return [
+      ...lines.slice(0, 2),
+      ``,
+      `No guidance injections this session — tool args were repaired`,
+      `pre-execution (zero cache impact) and no errors needed`,
+      `post-execution guidance.`,
+      ``,
+      ...lines.slice(2),
+    ].join("\n");
+  }
+
+  return lines.join("\n");
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 export function formatStats(stats: RepairStats): string {

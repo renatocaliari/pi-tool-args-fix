@@ -5,6 +5,40 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1-alpha] - 2026-06-04
+
+### Added
+
+- **LLM cache hit rate tracking** (`stats.ts`)
+  - Accumulates `usage.cacheRead`, `usage.cacheWrite`, `usage.input` from
+    assistant messages during the `context` event
+  - Read-only — does not modify any messages
+  - Per Claude's docs: "We run alerts on our prompt cache hit rate and
+    declare SEVs if they're too low." Same metric, exposed via the
+    extension
+- **`/repair-cache-info` enhanced** (commands.ts)
+  - Shows total input, cache reads, cache writes, uncached input
+  - Calculates hit rate as a percentage
+  - Cost estimate: based on Anthropic pricing (cache reads at 10%,
+    writes at 125%, uncached at 100% of base)
+  - Shows guidance injection count and the 4-rule cache-safety contract
+- **4-rule cache-safety contract** documented in `AGENTS.md` and
+  `docs/cache-safety.md`
+  - Replaces the over-strict "never modify `tool_result.content`" rule
+  - Rules: static cutoff + one-shot + byte-deterministic + stable position
+  - Coexistence notes: documents how this extension composes safely with
+    `condensed-milk`, `pi-tscg`, `pi-rtk`, `filter-output` (all follow
+    the same 4-rule pattern)
+  - Per Anthropic skill best practices and Microsoft Learn skills guidance
+
+### Verification
+
+```
+Tests:                530 passed (20 files)
+AGENTS.md validator:  13/13 rules passed
+Stack conflict:       identical to v1.7.0-alpha (0 new event hooks)
+```
+
 ## [1.7.0-alpha] - 2026-06-04
 
 ### Added
