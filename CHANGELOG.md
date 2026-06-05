@@ -5,6 +5,31 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1-alpha] - 2026-06-05
+
+### Changed (perf)
+
+- **Guidance join cap** — bounded the total text injected per `context`
+  event to protect LLM prefix cache and context window in long sessions.
+  - New constant `MAX_GUIDANCE_INJECTION_CHARS = 2000` (~500 tokens).
+  - Strategy: FIFO drop oldest items while join > cap. If a single
+    remaining item still exceeds cap, hard-truncate with marker.
+  - Marker: `"(N older guidance items suppressed — see JSONL log for
+    full history)"` prepended so LLM knows history exists.
+  - Items dropped are NOT re-injected in later turns — they remain in
+    JSONL for analytics.
+  - The cap is ALWAYS enforced (no bypass for single-item case).
+
+### Tests
+
+- **Deep-clone invariant test** — strengthened the existing OFF-toggle
+  test to read the JSONL log and verify `wouldHaveRepaired` is non-empty
+  and contains the expected entry. Catches a silent refactor regression
+  where someone removes the deep-clone in the OFF branch.
+- **Cap smoke test** — triggers 6 distinct bash error types to fill
+  pendingGuidance, verifies output length ≤ 2200 chars (2000 cap + ~200
+  marker). Soft assertion: if join doesn't exceed cap, test still passes.
+
 ## [1.9.0-alpha] - 2026-06-05
 
 ### Removed (breaking)
