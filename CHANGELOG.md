@@ -5,6 +5,38 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.6-alpha] - 2026-06-05
+
+### Fixed
+
+- **Root cause of "🔧 bash: timeout: stripped null" TUI artifact** —
+  when the LLM sends `timeout: null`, the TUI renders the original
+  LLM args before repair. My null-strip left `timeout` undefined,
+  and the TUI showed "stripped null" as the visual representation.
+  Fix: Step 3a now injects `timeout: 300` (5 min default) whenever
+  timeout is missing after repair. The TUI now shows
+  `timeout: 300` — clean.
+
+- **False-positive bash error suppression** — when the bash tool's
+  timeout wrapper is broken, it marks `isError=true` even though the
+  command succeeded. New Phase 1 guard: `bash + isError + no
+  classification + content has output` → clear error. Prevents
+  ~100-200 tokens of wasted LLM recovery per occurrence.
+
+- **Removed `setupPowerlineCustomItem`** — writing to settings.json
+  from an extension violates CoC. The status via `setStatus` is a
+  standard pi.dev API, not powerline-specific. Powerline auto-
+  discovers via `extension_statuses` segment if the preset includes
+  it. If not, the user configures customItems manually
+  (snippet in `/repair-status`). 60 lines of risky sync I/O removed.
+
+### Added
+
+- `/repair-status` command — shows toggle state, activity summary,
+  and (in TUI) powerline config snippet. Works with or without TUI.
+- 3 new tests (false-positive guard, /repair-status smoke,
+  setTitle sequence).
+
 ## [1.9.4-alpha] - 2026-06-05
 
 ### Added
