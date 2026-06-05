@@ -287,6 +287,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		setRepairStatus(ctx);
+		// Retry after TUI finishes init — setTitle is a no-op too early.
+		setTimeout(() => setRepairStatus(ctx), 1000);
 
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {
@@ -854,7 +856,9 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	pi.on("context", async (event, _ctx) => {
+	pi.on("context", async (event, ctx) => {
+		// TUI is fully initialized now — repair title should stick.
+		setRepairStatus(ctx);
 		for (const m of event.messages) {
 			const msg = (m as any)?.message ?? m;
 			if (msg?.role === "assistant" && msg?.usage) {
