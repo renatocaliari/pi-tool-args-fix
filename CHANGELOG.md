@@ -2,6 +2,42 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [1.9.10-alpha] - 2026-06-05
+
+### Fixed
+
+- **Cache formula** — `totalInput` was summing `cacheRead + cacheWrite + input`,
+  double-counting when `cacheRead > 0`. Now `totalInput = input` directly.
+  Hit rate = `cacheRead / totalInput` (was `cacheRead / wrongTotal`).
+- **Misleading "cache misses" label** — `formatStats` called guidance
+  injections "cache misses". Renamed to "Guidance items queued (side-channel)".
+- **Repair-notice guidance for non-directory-fallback** — removed.
+  Model sees tool result and already knows args were fixed. Only
+  `directory fallback` is invisible to the model (write redirected to listing).
+- **edit-mismatch dedup key** — changed from `fnv1a(errorText)` to `filePath`.
+  Each unique error on the same file no longer injects a separate
+  guidance message.
+- **Sequential edit dedup key** — changed from `JSON.stringify(lines)` to
+  `editPath`. Prevents duplicate guidance per attempt.
+- **Phase 4 (cat:) overlap with cli:** — removed. `cat:` guidance only
+  fires when `cli:` did not fire for the same tool.
+- **Phase 3 TOOL_NOT_FOUND early return** — removed. `TOOL_NOT_FOUND` now
+  falls through to Phase 4 which provides its own `cat:` guidance.
+- **`totalUncachedInput` renamed to `totalInputTokens`** — old name was
+  wrong (stored total input, not uncached portion).
+
+### Changed
+
+- **`formatCacheInfo` output** — intuitive breakdown:
+  `Total sent to API`, `Served from cache`, `Computed from zero`.
+  Notes when provider didn't report cache data. Shows absolute path
+  to repair-log JSONL.
+- **Guidance section** — explains `injected before LLM call, not persisted`
+  (side-channel), no "cache miss" language.
+- **New `formatFooterSummary()`** — compact one-liner:
+  `🔧 22 repairs | 7 guidance | 1 suppressed`.
+- **package.json** — version synced with git tags (was stale at 0.x,
+  actual project at 1.x).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
