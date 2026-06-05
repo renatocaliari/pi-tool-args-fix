@@ -188,8 +188,14 @@ describe("extension integration — eventSeq correctness", () => {
 describe("extension integration — repair-off toggle", () => {
   it("tool_call records repairSkipped=true when toggle OFF", async () => {
     const fake = createFakePi();
+    const sessionId = "deep-clone-invariant";
+    fake.ctx.sessionManager = { getSessionId: () => sessionId };
     await loadExtension(fake);
     await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
+
+    // Clean up log file to avoid stale events from previous runs
+    const logPath = sessionLogPath(sessionId);
+    if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
 
     // Turn repair OFF
     const offCmd = fake.commands.get("repair-off")!;
@@ -205,6 +211,22 @@ describe("extension integration — repair-off toggle", () => {
     );
     // Should return undefined (not crash), with repairSkipped logged
     expect(result).toBeUndefined();
+
+    // Deep-clone invariant: even though OFF, the OFF branch must compute
+    // wouldHaveRepaired from a CLONE so the original input is not mutated
+    // AND the comparison is against the truly-original input. If someone
+    // removes the deep-clone, the in-place repair would mutate the original
+    // and the diff would be empty — this assertion catches that regression.
+    const events = readSessionEvents(sessionId);
+    const toolCallEvent = events.find(
+      (e) => e.eventType === "tool_call" && e.repairSkipped === true,
+    );
+    expect(toolCallEvent).toBeDefined();
+    expect(toolCallEvent!.wouldHaveRepaired.length).toBeGreaterThan(0);
+    expect(toolCallEvent!.wouldHaveRepaired).toContain("extra: stripped null");
+
+    // Cleanup
+    if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
   });
 
   it("context still collects cache stats when toggle OFF", async () => {
@@ -302,5 +324,54 @@ describe("extension integration — cache-key dedup (repair summary)", () => {
     // Different summary → fresh guidance injected
     expect(second).toBeDefined();
     expect(second.messages.length).toBe(1);
+  });
+});
+
+describe("extension integration — guidance join cap", () => {
+  it("caps joined guidance text to protect LLM prefix cache", async () => {
+    const fake = createFakePi();
+    await loadExtension(fake);
+    await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
+
+    // Trigger 6+ distinct bash errors to fill pendingGuidance. Each unique
+    // (tool, errorType) emits a separate `cat:tool:errorType` guidance, plus
+    // `cli:tool` on the first failure. Total expected: ~7 guidances × ~300-500
+    // chars = ~2-3.5KB, exceeding the 2000-char cap.
+    const distinctErrors = [
+      "command not found: tool 'foo' not found",                // TOOL_NOT_FOUND
+      "No such file or directory",                              // ENOENT
+      "Permission denied",                                      // EACCES
+      "Operation timed out",                                    // timeout
+      "validation failed: must have required properties",      // SCHEMA_VALIDATION
+      "illegal option --bad-flag",                              // INVALID_ARG
+    ];
+    for (const errText of distinctErrors) {
+      await fake.handlers.get("tool_result")!(
+        {
+          toolName: "bash",
+          input: { command: "test" },
+          content: [{ type: "text", text: errText }],
+          isError: true,
+        },
+        fake.ctx,
+      );
+    }
+
+    const result = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
+    expect(result).toBeDefined();
+    expect(result.messages.length).toBe(1);
+    const text: string = result.messages[0].content[0].text;
+
+    // Cap is 2000 chars. With suppression marker (~100 chars) the absolute
+    // max output is ~2100. Either the cap triggered (marker present) OR the
+    // join was naturally under 2000 (acceptable). In both cases the output
+    // is bounded.
+    expect(text.length).toBeLessThanOrEqual(2200);
+
+    if (text.includes("suppressed")) {
+      // Cap triggered: marker present + bounded length
+      expect(text).toMatch(/older \d+ guidance item/);
+    }
+    // If cap not triggered (rare), text is just the join (≤ 2000 chars)
   });
 });

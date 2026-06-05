@@ -128,6 +128,23 @@ function buildToolResultEvent(
 }
 
 /**
+ * Cap for the total guidance text injected into a single `context` event.
+ *
+ * Pending guidance is a side-channel buffer that accumulates across many
+ * tool calls. With one-shot dedup, a session with many distinct repair /
+ * error kinds could grow the join unboundedly — a single huge guidance
+ * message would burn more LLM context and more cache budget than it's
+ * worth. 2000 chars is ~500 tokens, well below the cache-miss budget
+ * the user is willing to pay for guidance in one turn.
+ *
+ * Convention: when the cap is exceeded, drop OLDEST items first (FIFO)
+ * and prepend a transparent marker so the LLM (and the user) knows the
+ * full history exists in JSONL. Items dropped are NOT re-injected in
+ * later turns — they remain in the JSONL log for analytics.
+ */
+const MAX_GUIDANCE_INJECTION_CHARS = 2000;
+
+/**
  * Cache-stable hash for guidance keys.
  *
  * FNV-1a 32-bit → base-36 string (~7 chars). Used to derive deterministic,
@@ -788,8 +805,29 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (pendingGuidance.length === 0) return undefined;
+
+		// Cap the joined text to protect LLM prefix cache and context window.
+		// FIFO drop — oldest items are typically stale by the time we hit the
+		// cap, and the most recent guidance is the most relevant to the LLM.
+		// Last-resort: if a single item still exceeds the cap after all others
+		// are dropped, hard-truncate it. The cap is always enforced.
+		const SEP = "\n\n";
+		let suppressedCount = 0;
+		while (pendingGuidance.length > 1 && pendingGuidance.join(SEP).length > MAX_GUIDANCE_INJECTION_CHARS) {
+			pendingGuidance.shift();
+			suppressedCount++;
+		}
+		let guidanceText = pendingGuidance.join(SEP);
+		if (guidanceText.length > MAX_GUIDANCE_INJECTION_CHARS) {
+			guidanceText = guidanceText.slice(0, MAX_GUIDANCE_INJECTION_CHARS - 50) + "...[truncated, see JSONL log]";
+			suppressedCount++;
+		}
+		if (suppressedCount > 0) {
+			guidanceText = `(${suppressedCount} older guidance item${suppressedCount === 1 ? "" : "s"} suppressed — see JSONL log for full history)\n\n${guidanceText}`;
+		}
+
 		const messages = [...event.messages];
-		messages.push({ role: "user" as const, content: [{ type: "text" as const, text: pendingGuidance.join("\n\n") }] });
+		messages.push({ role: "user" as const, content: [{ type: "text" as const, text: guidanceText }] });
 		pendingGuidance.length = 0;
 		return { messages };
 	});
