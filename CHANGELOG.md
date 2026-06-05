@@ -5,6 +5,30 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2-alpha] - 2026-06-05
+
+### Added (UX visibility)
+
+- **Cap counter surfaced** — `stats.guidanceSuppressed` tracks the number
+  of guidance items dropped or hard-truncated by the 2000-char cap. The
+  counter is now shown in `/repair-cache-info` as
+  `Guidance items suppressed by cap: N  (see JSONL for full history)`,
+  so users can detect when the cap is biting and decide whether to
+  investigate (via JSONL) or accept the bounded guidance.
+  - Increments in the `context` handler when FIFO drop or hard-truncate
+    fires (one tick per suppressed item).
+  - Default zero; doesn't add noise to sessions that never trip the cap.
+  - Two unit tests: positive case (N=3) and default zero.
+
+- **Status message communicates analytics-active** —
+  `RepairToggle.getStatusDisplay()` now returns
+  `🔧 repair: off (analytics + logs still on)` when the toggle is
+  disabled, so users understand that the off state is repair/guidance
+  off, not ALL-off. Cache stats, JSONL events, and
+  `wouldHaveRepaired` continue to flow and are queryable.
+  - One existing test updated to match the new message.
+  - One new test locks the analytics-mention requirement.
+
 ## [1.9.1-alpha] - 2026-06-05
 
 ### Changed (perf)
