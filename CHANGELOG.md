@@ -5,6 +5,90 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0-alpha] - 2026-06-05
+
+### Removed (breaking)
+
+- **Cache cost tracking** — LLM pricing is volatile; static cost data
+  would lie to the user the moment a provider changes pricing. Tokens
+  are immutable and technically precise.
+  - `prices/` directory deleted (`data_slim.json` + `lookup.ts`,
+    ~200KB total)
+  - `formatCacheInfo()` no longer emits dollar amounts, only tokens
+    + hit rate + cache reads/writes
+  - `/repair-cache-info` command output simplified accordingly
+  - `stats.test.ts` expectations aligned
+
+### Fixed
+
+- **Toggle ON/OFF contract** — the toggle did not actually stop
+  repair mutations or guidance injection in all paths.
+  - `tool_call` when OFF: now early-returns with `repairSkipped=true`
+    and `wouldHaveRepaired=[...]`. `event.input` is never mutated;
+    no path validation / staleness / sequential overlap blocks fire.
+  - `tool_result` when OFF: skips guidance queueing but still records
+    analytics + JSONL events with `repairSkipped=true`.
+  - `context` when OFF: clears `pendingGuidance` and returns
+    `undefined` — zero LLM message injection.
+  - Cache stats (`cacheRead/Write/Input`) continue accumulating when
+    OFF, matching spec "off = disable repair/guidance but keep
+    analytics/logs".
+  - **Toolchain cleanup** — fixed 4 TypeScript strict errors left
+    behind during the toggle refactor (unused imports `aggregateStats`
+    and `repairObjectFieldsWithTrace`, unused destructure
+    `repairSummary`, double-clone in OFF branch). Vitest does not
+    catch these; `tsc --noEmit` does.
+
+- **`summarizeRepairs` null-strip detection** — pre-fix bug: function
+  only emitted `stripped null` for keys in `repaired` but not in
+  `original` (i.e., ADDED keys, mislabeled). The actual case (key
+  in original but not in repaired = stripped) was never detected.
+  This made `finalRepairSummary` empty for the most common repair
+  (null-strip on optional fields), so the repair notice never fired.
+  Post-fix: two-pass iteration properly detects stripped, added, and
+  changed keys.
+
+- **`parsed JSON string → array` mislabel** — branch fired for ANY
+  string→array, including `"single.txt"` → `["single.txt"]`. Now
+  sniffs the source: JSON-like if it trims to start with `[`, `{`,
+  or `"` and end with its matching close. Otherwise → `wrapped
+  bare → array`. KISS bracket sniff, no `JSON.parse`.
+
+### Changed (perf)
+
+- **Cache-stable dedup keys for guidance notices** — weak keys
+  replaced with content-based ones to reduce LLM prefix cache misses
+  and prevent false dedup of legitimately different repairs.
+  - `repair:` notice key: `${toolName}:${originalJson.length}` (weak,
+    byte-length) → `${toolName}:${sortedSummary.join("|")}` (summary-
+    based, sort-stable).
+  - `edit-mismatch:` key: `${toolName}:${errorText.slice(0, 60)}`
+    (weak, first 60 chars) → `${toolName}:${fnv1a(errorText.trim())}`
+    (full text, FNV-1a 32-bit hash).
+  - Added `fnv1a()` helper (no new deps, ~7-char base-36 output).
+  - **Impact**: same kind of repair = same key = one guidance per
+    session (cache hit). Different kind of repair = different key =
+    LLM gets the right hint each time. Null-strip is now visible to
+    the LLM for the first time (was silently suppressed before).
+
+### DRY
+
+- Reciprocal "MUST mirror" comments in `repairs/dispatch.ts` and
+  `handlers/utils.ts` flag the coupling between strip rules and
+  their classification. New strip rule in one place requires mirror
+  in the other.
+
+### Tests
+
+- 17 new tests (542 total, all passing):
+  - `handlers/utils.test.ts` (15): stripped detection, added/changed
+    detection, JSON-like sniff, cache-key stability, nested prefix
+  - `extension-integration.test.ts` (2): same summary dedup,
+    different summary no-dedup
+- Restored 3 tests lost in previous cleanup: `repairSkipped=true` in
+  OFF event log, cache stats accumulate when OFF, eventSeq
+  monotonicity (analytics integrity guard).
+
 ## [1.7.1-alpha] - 2026-06-04
 
 ### Added
