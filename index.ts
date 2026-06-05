@@ -551,7 +551,7 @@ export default function (pi: ExtensionAPI) {
 						const currentFirstLine = currentOldText.split("\n")[0]!;
 						if (prev.firstLine === currentFirstLine || prev.oldText === currentOldText) {
 							queueGuidance(
-								`seq:${editPath}:${JSON.stringify([prev.firstLine, currentFirstLine])}`,
+								`seq:${editPath}`,
 								buildSequentialEditGuidance(prev.firstLine, currentFirstLine, editPath),
 								true,
 							);
@@ -596,13 +596,20 @@ export default function (pi: ExtensionAPI) {
 			recordRepairs(stats, finalRepairSummary);
 			if (finalRepairSummary.length > 0) {
 				const repairNotice = `🔧 ${event.toolName}: ${finalRepairSummary.join("; ")}`;
-				// Cache-stable key: same repair SUMMARY = same key, regardless of input length.
-				// Previously keyed on `originalJson.length` which collided when two different
-				// inputs (different summary) happened to share a byte length — the second
-				// variant's notice was suppressed. Sorting ensures key stability when
-				// summarizeRepairs returns fields in different orders across runs.
-				const summaryKey = finalRepairSummary.slice().sort().join("|");
-				queueGuidance(`repair:${event.toolName}:${summaryKey}`, repairNotice, true);
+				// Only inject guidance for directory fallback — the model cannot
+				// see that the write was redirected. All other repairs (timeout,
+				// offset, type coercion, etc.) are transparent: the model sees
+				// the tool result and already knows the args were fixed.
+				const hasDirectoryFallback = finalRepairSummary.some(s => s.includes("directory fallback"));
+				if (hasDirectoryFallback) {
+					// Cache-stable key: same repair SUMMARY = same key, regardless of input length.
+					// Previously keyed on `originalJson.length` which collided when two different
+					// inputs (different summary) happened to share a byte length — the second
+					// variant's notice was suppressed. Sorting ensures key stability when
+					// summarizeRepairs returns fields in different orders across runs.
+					const summaryKey = finalRepairSummary.slice().sort().join("|");
+					queueGuidance(`repair:${event.toolName}:${summaryKey}`, repairNotice, true);
+				}
 			}
 
 			// Update event.input in-place (this is what the tool receives)
@@ -773,18 +780,26 @@ export default function (pi: ExtensionAPI) {
 					const errorText = extractTextContent(event.content) ?? "";
 					const enhanced = await buildEditMismatchGuidanceText(event, errorText);
 					if (enhanced) {
-						// Cache-stable key: hash the full normalized error text.
-						// Previously used first 60 chars which collided when two errors
-						// shared a prefix but differed past the slice window. FNV-1a of
-						// the full text gives a short, deterministic, collision-resistant
-						// dedup segment.
-						const errorKey = fnv1a(errorText.trim());
-						queueGuidance(`edit-mismatch:${event.toolName}:${errorKey}`, enhanced, true);
+						// Cache-stable key: file path, not error hash.
+						// Previously used fnv1a(errorText) which created a unique key
+						// per error — consecutive mismatches on the same file each
+						// injected new guidance even though the advice is identical
+						// ("re-read the file"). File path gives 1 guidance per file
+						// per session, which is enough.
+						const filePath = (event.input as Record<string, unknown>)?.path ?? "unknown";
+						queueGuidance(`edit-mismatch:${event.toolName}:${filePath}`, enhanced, true);
 					}
 				}
+				// Phase 4 (error-type) guidance overlaps with cli: guidance already
+				// queued in Phase 3 for execution errors. The cat: key is defensively
+				// skipped here for error types that cli: covers — currently all of them
+				// since Phase 3 traps every hasError path. This guard prevents future
+				// regressions if Phase 3's early return changes.
 			}
 
-			if (consecutiveCount >= 1) {
+			// Don't return early for TOOL_NOT_FOUND — Phase 3 queues no guidance
+			// for this error type, and Phase 4 is the correct handler.
+			if (consecutiveCount >= 1 && err.executionErrorType !== "TOOL_NOT_FOUND") {
 				err.blindspotCategory = null;
 				const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "cli_guidance", inputKeys, isOff);
 				recordEvent(rec);
@@ -794,15 +809,23 @@ export default function (pi: ExtensionAPI) {
 			failureTracker.recordSuccess(event.toolName);
 		}
 
-		// Phase 4: Error-type guidance
+		// Phase 4: Error-type guidance (only for types NOT covered by cli: in Phase 3)
+		// Phase 3 traps most hasError paths via early return, but explicitly skips
+		// TOOL_NOT_FOUND. This phase catches that gap.
+		// Future: if new error types are added that Phase 3 shouldn't trap, add them here.
 		if (err.executionErrorType) {
+			// Skip if cli: already fired for this tool in Phase 3 (already handled).
+			// Check injectedGuidance directly rather than REPAIRABLE_TOOLS because
+			// Phase 3 explicitly excludes TOOL_NOT_FOUND from cli: injection, so
+			// the tool may be repairable but cli: never fired.
+			if (injectedGuidance.has(`cli:${event.toolName}`)) {
+				err.blindspotCategory = null;
+				const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "category_guidance", undefined, isOff);
+				recordEvent(rec);
+				return undefined;
+			}
 			const guidanceKey = `cat:${event.toolName}:${err.executionErrorType}`;
 			let guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
-			if (err.executionErrorType === "EDIT_MISMATCH" && !err.blindspotCategory) {
-				const errorText = extractTextContent(event.content) ?? "";
-				const enhanced = await buildEditMismatchGuidanceText(event, errorText);
-				if (enhanced) guidanceText = enhanced;
-			}
 			if (err.executionErrorType === "SCHEMA_VALIDATION") {
 				const errorText = extractTextContent(event.content) ?? "";
 				const translated = translateSchemaValidationError(errorText);
@@ -858,13 +881,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("context", async (event, _ctx) => {
+		// Set session ID once (for repair-log path in formatCacheInfo)
+		if (!stats.sessionId) {
+			stats.sessionId = (_ctx.sessionManager as any)?.getSessionId?.() ?? "unknown";
+		}
+
 		for (const m of event.messages) {
 			const msg = (m as any)?.message ?? m;
 			if (msg?.role === "assistant" && msg?.usage) {
 				const u = msg.usage;
 				stats.totalCacheRead += u.cacheRead ?? 0;
 				stats.totalCacheWrite += u.cacheWrite ?? 0;
-				stats.totalUncachedInput += u.input ?? 0;
+				stats.totalInputTokens += u.input ?? 0;
 			}
 		}
 		

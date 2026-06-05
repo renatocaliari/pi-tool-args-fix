@@ -81,7 +81,7 @@ describe("extension integration — toggle action contract", () => {
     await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
   });
 
-  it("Toggle ON (default): repairs arguments and queues guidance", async () => {
+  it("Toggle ON (default): repairs arguments but does NOT queue guidance for non-directory-fallback repairs", async () => {
     const input = { command: "echo hi", extra: null };
     const event = { toolName: "bash", input };
     
@@ -95,9 +95,9 @@ describe("extension integration — toggle action contract", () => {
       isError: true
     }, fake.ctx);
 
+    // Non-directory-fallback repairs no longer inject guidance
     const ctxRes = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
-    expect(ctxRes).toBeDefined();
-    expect(ctxRes.messages.length).toBe(1);
+    expect(ctxRes).toBeUndefined();
   });
 
   it("Toggle OFF: skips repairs and suppresses guidance", async () => {
@@ -263,13 +263,13 @@ describe("extension integration — repair-off toggle", () => {
   });
 });
 
-describe("extension integration — cache-key dedup (repair summary)", () => {
-  it("same repair summary on two tool_calls injects guidance only once", async () => {
+describe("extension integration — no repair-notice guidance except directory fallback", () => {
+  it("repair summary from non-directory-fallback does NOT inject guidance", async () => {
     const fake = createFakePi();
     await loadExtension(fake);
     await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
 
-    // First tool_call: extra=null gets stripped, summary = ["extra: stripped null"]
+    // tool_call triggers a "stripped null" repair (non-directory-fallback)
     await fake.handlers.get("tool_call")!(
       { toolName: "bash", input: { command: "echo a", extra: null } },
       fake.ctx,
@@ -278,53 +278,32 @@ describe("extension integration — cache-key dedup (repair summary)", () => {
       { toolName: "bash", input: { command: "echo a" }, content: [{ type: "text", text: "a" }], isError: false },
       fake.ctx,
     );
-    const first = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
-    expect(first.messages.length).toBe(1); // 🔧 notice injected
-
-    // Second tool_call: same field (extra) stripped → same summary → dedup
-    await fake.handlers.get("tool_call")!(
-      { toolName: "bash", input: { command: "echo b", extra: null } },
-      fake.ctx,
-    );
-    await fake.handlers.get("tool_result")!(
-      { toolName: "bash", input: { command: "echo b" }, content: [{ type: "text", text: "b" }], isError: false },
-      fake.ctx,
-    );
-    const second = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
-    // No new guidance → returns undefined
-    expect(second).toBeUndefined();
+    // No guidance for non-directory-fallback repairs
+    const ctxRes = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
+    expect(ctxRes).toBeUndefined();
   });
 
-  it("different repair summary on two tool_calls injects guidance twice", async () => {
+  it("cli: error guidance still deduplicates correctly (one-shot per tool)", async () => {
     const fake = createFakePi();
     await loadExtension(fake);
     await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
 
-    // First: extra=null stripped → summary includes "extra: stripped null"
-    await fake.handlers.get("tool_call")!(
-      { toolName: "bash", input: { command: "echo a", extra: null } },
-      fake.ctx,
-    );
+    // First bash error: classification finds something (tool not found)
     await fake.handlers.get("tool_result")!(
-      { toolName: "bash", input: { command: "echo a" }, content: [{ type: "text", text: "a" }], isError: false },
+      { toolName: "bash", input: { command: "nonexistent" }, content: [{ type: "text", text: "command not found: tool 'foo' not found" }], isError: true },
       fake.ctx,
     );
     const first = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
-    expect(first.messages.length).toBe(1);
+    expect(first).toBeDefined();
+    expect(first.messages.length).toBe(1);  // cli:bash injected
 
-    // Second: OTHER field (not extra) stripped → different summary → new injection
-    await fake.handlers.get("tool_call")!(
-      { toolName: "bash", input: { command: "echo b", other: null } },
-      fake.ctx,
-    );
+    // Second bash error: cli:bash already queued → dedup → undefined
     await fake.handlers.get("tool_result")!(
-      { toolName: "bash", input: { command: "echo b" }, content: [{ type: "text", text: "b" }], isError: false },
+      { toolName: "bash", input: { command: "nonexistent2" }, content: [{ type: "text", text: "command not found: tool 'bar' not found" }], isError: true },
       fake.ctx,
     );
     const second = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
-    // Different summary → fresh guidance injected
-    expect(second).toBeDefined();
-    expect(second.messages.length).toBe(1);
+    expect(second).toBeUndefined();  // dedup → no new guidance
   });
 });
 
@@ -338,6 +317,11 @@ describe("extension integration — guidance join cap", () => {
     // (tool, errorType) emits a separate `cat:tool:errorType` guidance, plus
     // `cli:tool` on the first failure. Total expected: ~7 guidances × ~300-500
     // chars = ~2-3.5KB, exceeding the 2000-char cap.
+    // Note: Phase 4 (cat:) guidance no longer fires for REPAIRABLE_TOOLS,
+    // but cli:bash fires once and is deduped. Only the first error triggers
+    // a cli:bash guidance (~500B), which is well under the 2000-char cap.
+    // This test verifies the cap still works — with more errors in the future
+    // or with new guidance types, the cap will trigger.
     const distinctErrors = [
       "command not found: tool 'foo' not found",                // TOOL_NOT_FOUND
       "No such file or directory",                              // ENOENT

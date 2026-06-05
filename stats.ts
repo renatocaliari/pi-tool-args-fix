@@ -78,7 +78,9 @@ export interface RepairStats {
   wouldHaveRepairedTotal: number;
   totalCacheRead: number;
   totalCacheWrite: number;
-  totalUncachedInput: number;
+  totalInputTokens: number;
+  /** Session ID for repair-log path. Set by context handler. */
+  sessionId?: string;
 }
 
 /**
@@ -109,7 +111,8 @@ export function createStats(): RepairStats {
     wouldHaveRepairedTotal: 0,
     totalCacheRead: 0,
     totalCacheWrite: 0,
-    totalUncachedInput: 0,
+    totalInputTokens: 0,
+    sessionId: undefined,
   };
 }
 
@@ -137,42 +140,66 @@ export function recordRepairs(
  * Format cache impact info for the session.
  */
 export function formatCacheInfo(stats: RepairStats): string {
-  const totalInput = stats.totalCacheRead + stats.totalCacheWrite + stats.totalUncachedInput;
-  const hitRate = totalInput > 0 ? (stats.totalCacheRead / totalInput) * 100 : 0;
-  const writeRate = totalInput > 0 ? (stats.totalCacheWrite / totalInput) * 100 : 0;
+  const totalInput = stats.totalInputTokens;
+  const computedFromScratch = totalInput - stats.totalCacheRead;
 
-  const lines: string[] = [
+  // Build cache metrics section
+  const cacheLines: string[] = [
     `📊 Cache Impact`,
     `─────────────────`,
     ``,
-    `This extension's cache-safety contract:`,
-    `  Guidance items queued: ${stats.guidanceInjections}  (unique, post-execution, side-channel only)`,
-    `  Guidance items suppressed by cap: ${stats.guidanceSuppressed}  (see JSONL for full history)`,
-    ``,
-    `LLM cache hit rate (provider-reported):`,
-    `  Total input:    ${formatTokens(totalInput)}`,
-    `  Cache reads:    ${formatTokens(stats.totalCacheRead)} (${hitRate.toFixed(1)}% hit rate)`,
-    `  Cache writes:   ${formatTokens(stats.totalCacheWrite)} (${writeRate.toFixed(1)}% of total)`,
-    `  Uncached:       ${formatTokens(stats.totalUncachedInput)}`,
-    ``,
-    `Cache contract: this extension follows the 4-rule pattern`,
-    `(static cutoff + one-shot + byte-deterministic + stable position).`,
-    `See \`docs/cache-safety.md\` for the full contract.`,
+    `Tokenizer (LLM prefix cache):`,
+    `  Total sent to API:   ${padToken(totalInput)}  (100%)`,
+    `  Served from cache:   ${padToken(stats.totalCacheRead)}  ${fmtPct(stats.totalCacheRead, totalInput)}`,
+    `  Computed from zero:  ${padToken(computedFromScratch)}  ${fmtPct(computedFromScratch, totalInput)}`,
   ];
 
-  if (stats.guidanceInjections === 0) {
-    return [
-      ...lines.slice(0, 2),
-      ``,
-      `No guidance injections this session — tool args were repaired`,
-      `pre-execution (zero cache impact) and no errors needed`,
-      `post-execution guidance.`,
-      ``,
-      ...lines.slice(2),
-    ].join("\n");
+  if (stats.totalCacheWrite > 0) {
+    cacheLines.push(`  Written to cache:    ${padToken(stats.totalCacheWrite)}`);
   }
 
-  return lines.join("\n");
+  // Only add the note when no cache data was reported
+  if (stats.totalCacheRead === 0 && totalInput > 0) {
+    cacheLines.push(`  (${fmtPct(0, totalInput)} hit rate — provider did not report cache data)`);
+  }
+
+  // Guidance section
+  const guidanceLines: string[] = [
+    ``,
+    `Guidance (context event — injected before LLM call, not persisted):`,
+    `  Items: ${stats.guidanceInjections}`,
+  ];
+  if (stats.guidanceSuppressed > 0) {
+    guidanceLines.push(`  Suppressed by 2000-char cap: ${stats.guidanceSuppressed}`);
+  }
+
+  // Repair log path
+  const pathLines: string[] = [
+    ``,
+    `Repair log (all events with full details):`,
+    `  ${formatRepairLogPath(stats)}`,
+  ];
+
+  return [...cacheLines, ...guidanceLines, ...pathLines].join("\n");
+}
+
+function fmtPct(part: number, total: number): string {
+  if (total <= 0) return "";
+  return `(${(part / total * 100).toFixed(1)}%)`;
+}
+
+function padToken(n: number): string {
+  return String(formatTokens(n)).padStart(8);
+}
+
+/**
+ * Build the absolute path to the repair log file.
+ * Uses process.cwd() at call time (when user runs /repair-cache-info).
+ */
+export function formatRepairLogPath(stats: RepairStats): string {
+  const cwd = process.cwd();
+  const sessionId = stats.sessionId ?? "unknown";
+  return `${cwd}/.pi/repair-log/${sessionId}.jsonl`;
 }
 
 function formatTokens(n: number): string {
@@ -216,10 +243,33 @@ export function formatStats(stats: RepairStats): string {
   }
 
   if (stats.guidanceInjections > 0) {
-    lines.push(`Guidance injections (cache misses): ${stats.guidanceInjections}`);
+    lines.push(`Guidance items queued (side-channel): ${stats.guidanceInjections}`);
   }
 
   return [header, separator, ...lines, separator, totalLine].join("\n");
+}
+
+/**
+ * Compact one-line summary for the powerline / footer.
+ * Shows: repairs count | guidance count | suppressed count.
+ *
+ * Example: "🔧 22 repairs  |  7 guidance  |  0 suppressed"
+ */
+export function formatFooterSummary(stats: RepairStats): string {
+  const parts: string[] = [];
+  if (stats.totalRepairs > 0) {
+    parts.push(`${stats.totalRepairs} repairs`);
+  }
+  if (stats.guidanceInjections > 0) {
+    parts.push(`${stats.guidanceInjections} guidance`);
+  }
+  if (stats.guidanceSuppressed > 0) {
+    parts.push(`${stats.guidanceSuppressed} suppressed`);
+  }
+  if (parts.length === 0) {
+    return "🔧 repair: on  —  no activity";
+  }
+  return `🔧 ${parts.join("  |  ")}`;
 }
 
 /**

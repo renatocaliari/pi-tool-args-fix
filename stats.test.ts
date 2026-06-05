@@ -15,6 +15,7 @@ import {
   formatStats,
   formatCacheInfo,
   formatWouldHaveRepaired,
+  formatFooterSummary,
 } from "./stats.js";
 
 // ─── RepairToggle Tests ────────────────────────────────────────────────
@@ -342,56 +343,87 @@ describe("formatStats", () => {
 // ─── formatCacheInfo Tests ─────────────────────────────────────────────
 
 describe("formatCacheInfo", () => {
-  it("returns 'no guidance' message when guidanceInjections is 0", () => {
+  it("shows cache metrics with guidance items = 0", () => {
     const stats = createStats();
-    const output = formatCacheInfo(stats);
-
-    expect(output).toContain("No guidance injections this session");
-    expect(output).toContain("Guidance items queued: 0");
-  });
-
-  it("shows full output when guidanceInjections > 0", () => {
-    const stats = createStats();
-    stats.guidanceInjections = 5;
-    stats.totalCacheRead = 100_000;
-    stats.totalCacheWrite = 20_000;
-    stats.totalUncachedInput = 30_000;
+    stats.totalInputTokens = 100_000;
+    stats.totalCacheRead = 60_000;
     const output = formatCacheInfo(stats);
 
     expect(output).toContain("📊 Cache Impact");
-    expect(output).toContain("Guidance items queued: 5");
-    expect(output).toContain("LLM cache hit rate");
-    expect(output).toContain("Cache reads:");
-    expect(output).toContain("Cache writes:");
-    expect(output).toContain("Uncached:");
+    expect(output).toContain("Total sent to API:");
+    expect(output).toContain("100.0K");
+    expect(output).toContain("Served from cache:");
+    expect(output).toContain("60.0K");
+    expect(output).toContain("60.0%");
+    expect(output).toContain("Computed from zero:");
+    expect(output).toContain("40.0K");
+    expect(output).toContain("40.0%");
+    expect(output).toContain("Items: 0");
   });
 
-  it("calculates correct hit rate", () => {
+  it("shows guidance items and repair-log path when guidance > 0", () => {
     const stats = createStats();
-    stats.guidanceInjections = 1;
-    stats.totalCacheRead = 60_000;
+    stats.guidanceInjections = 5;
+    stats.totalInputTokens = 150_000;
+    stats.totalCacheRead = 100_000;
     stats.totalCacheWrite = 20_000;
-    stats.totalUncachedInput = 20_000;
+    stats.sessionId = "test-session-123";
     const output = formatCacheInfo(stats);
 
-    // totalInput = 100K, hit rate = 60%
-    expect(output).toContain("60.0% hit rate");
+    expect(output).toContain("📊 Cache Impact");
+    expect(output).toContain("Total sent to API:");
+    expect(output).toContain("150.0K");
+    expect(output).toContain("Served from cache:");
+    expect(output).toContain("100.0K");
+    expect(output).toContain("66.7%");
+    expect(output).toContain("Computed from zero:");
+    expect(output).toContain("50.0K");
+    expect(output).toContain("Written to cache:");
+    expect(output).toContain("20.0K");
+    expect(output).toContain("Items: 5");
+    expect(output).toContain("test-session-123");
+    expect(output).toContain(".pi/repair-log/");
   });
 
-  it("shows cap-suppressed count in cache info (P4 surface)", () => {
+  it("calculates correct percentage", () => {
+    const stats = createStats();
+    stats.totalInputTokens = 100_000;
+    stats.totalCacheRead = 60_000;
+    const output = formatCacheInfo(stats);
+
+    // 60K / 100K = 60.0%
+    expect(output).toContain("60.0%");
+    // computed = 40K / 100K = 40.0%
+    expect(output).toContain("40.0%");
+  });
+
+  it("shows provider-did-not-report note when cacheRead is 0", () => {
+    const stats = createStats();
+    stats.totalInputTokens = 50_000;
+    stats.totalCacheRead = 0;
+    const output = formatCacheInfo(stats);
+
+    expect(output).toContain("provider did not report cache data");
+    expect(output).toContain("0.0%");
+  });
+
+  it("shows cap-suppressed count", () => {
     const stats = createStats();
     stats.guidanceInjections = 10;
-    stats.guidanceSuppressed = 3; // 3 items dropped by the 2000-char cap
+    stats.guidanceSuppressed = 3;
+    stats.totalInputTokens = 100_000;
     const output = formatCacheInfo(stats);
-    // User-facing: tells them guidance was suppressed and points to JSONL.
-    expect(output).toContain("Guidance items suppressed by cap: 3");
-    expect(output).toContain("see JSONL for full history");
+
+    expect(output).toContain("Items: 10");
+    expect(output).toContain("Suppressed by 2000-char cap: 3");
   });
 
-  it("shows 0 suppressed by default (no noise when cap never triggered)", () => {
+  it("omits suppressed line when 0 (no noise)", () => {
     const stats = createStats();
+    stats.totalInputTokens = 50_000;
     const output = formatCacheInfo(stats);
-    expect(output).toContain("Guidance items suppressed by cap: 0");
+
+    expect(output).not.toContain("Suppressed by 2000-char cap");
   });
 
   // ─── formatWouldHaveRepaired Tests (G3 surface) ────────────────────────────
@@ -469,15 +501,70 @@ describe("formatCacheInfo", () => {
     stats.guidanceInjections = 1;
     const output = formatCacheInfo(stats);
 
-    expect(output).toContain("Total input:    0");
-    expect(output).toContain("Cache reads:    0 (0.0% hit rate)");
+    expect(output).toContain("Total sent to API:");
+    expect(output).toContain("Served from cache:");
+    expect(output).toContain("Computed from zero:");
   });
 
-  it("contains the 4-rule pattern description", () => {
+  it("shows repair log path in output", () => {
     const stats = createStats();
+    stats.sessionId = "test-abc";
     const output = formatCacheInfo(stats);
 
-    expect(output).toContain("4-rule pattern");
-    expect(output).toContain("static cutoff + one-shot + byte-deterministic + stable position");
+    expect(output).toContain(".pi/repair-log/");
+    expect(output).toContain("test-abc");
   });
+
+// ─── formatFooterSummary Tests ────────────────────────────────────────
+
+describe("formatFooterSummary", () => {
+  it("returns 'no activity' when stats are empty", () => {
+    const stats = createStats();
+    expect(formatFooterSummary(stats)).toBe("🔧 repair: on  —  no activity");
+  });
+
+  it("shows repairs count", () => {
+    const stats = createStats();
+    recordRepairs(stats, ["path.a: parsed JSON string → array"]);
+    const output = formatFooterSummary(stats);
+    expect(output).toContain("1 repairs");
+    expect(output).not.toContain("guidance");
+    expect(output).not.toContain("suppressed");
+  });
+
+  it("shows guidance count", () => {
+    const stats = createStats();
+    stats.guidanceInjections = 7;
+    const output = formatFooterSummary(stats);
+    expect(output).toContain("7 guidance");
+    expect(output).not.toContain("repairs");
+  });
+
+  it("shows suppressed count", () => {
+    const stats = createStats();
+    stats.guidanceSuppressed = 3;
+    const output = formatFooterSummary(stats);
+    expect(output).toContain("3 suppressed");
+  });
+
+  it("shows all three stats together", () => {
+    const stats = createStats();
+    recordRepairs(stats, ["path.a: parsed JSON string → array"]);
+    stats.guidanceInjections = 7;
+    stats.guidanceSuppressed = 1;
+    const output = formatFooterSummary(stats);
+    expect(output).toContain("1 repairs");
+    expect(output).toContain("7 guidance");
+    expect(output).toContain("1 suppressed");
+  });
+
+  it("uses pipe separators", () => {
+    const stats = createStats();
+    recordRepairs(stats, ["path.a: parsed JSON string → array"]);
+    stats.guidanceInjections = 3;
+    const output = formatFooterSummary(stats);
+    expect(output).toContain("|");
+    expect(output).toMatch(/🔧 /);
+  });
+});
 });
