@@ -4,7 +4,7 @@
  * All /repair-* commands registered here.
  */
 
-import { formatStats, formatCacheInfo } from "../stats.js";
+import { formatStats, formatCacheInfo, formatWouldHaveRepaired } from "../stats.js";
 import {
   readAllEvents,
   aggregateStats,
@@ -68,15 +68,19 @@ export function registerCommands(
     description: "Show repair layer statistics for this session (in-memory)",
     handler: async (_args: any, uiCtx: any) => {
       const output = formatStats(stats);
+      const wouldHave = formatWouldHaveRepaired(stats);
 
       if (uiCtx.hasUI) {
         uiCtx.ui.notify(
-          `📊 Repair Stats (this session)\n\n${output}\n\n💡 Tip: run /repair-stats-global for all-session aggregate.`,
+          `📊 Repair Stats (this session)\n\n${output}\n\n${wouldHave}\n\n💡 Tip: run /repair-stats-global for all-session aggregate.`,
           "info",
         );
       } else {
         console.log("📊 Repair Stats (this session)");
         console.log(output);
+        console.log("");
+        console.log(wouldHave);
+        console.log("");
         console.log("💡 Tip: run /repair-stats-global for all-session aggregate.");
       }
     },

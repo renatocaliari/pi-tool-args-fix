@@ -14,6 +14,7 @@ import {
   recordRepairs,
   formatStats,
   formatCacheInfo,
+  formatWouldHaveRepaired,
 } from "./stats.js";
 
 // ─── RepairToggle Tests ────────────────────────────────────────────────
@@ -391,6 +392,53 @@ describe("formatCacheInfo", () => {
     const stats = createStats();
     const output = formatCacheInfo(stats);
     expect(output).toContain("Guidance items suppressed by cap: 0");
+  });
+
+  // ─── formatWouldHaveRepaired Tests (G3 surface) ────────────────────────────
+  describe("formatWouldHaveRepaired", () => {
+    it("returns one-liner when nothing was skipped", () => {
+      const stats = createStats();
+      const output = formatWouldHaveRepaired(stats);
+      expect(output).toContain("🔍 Would have repaired (if repair was ON): 0");
+      expect(output).toContain("no skipped events");
+    });
+
+    it("shows breakdown by repair type with total", () => {
+      const stats = createStats();
+      stats.wouldHaveRepairedTotal = 47;
+      stats.wouldHaveRepairedByType.set("stripped null", 23);
+      stats.wouldHaveRepairedByType.set("wrapped bare → array", 12);
+      stats.wouldHaveRepairedByType.set("coerced boolean", 8);
+      stats.wouldHaveRepairedByType.set("directory fallback", 4);
+      const output = formatWouldHaveRepaired(stats);
+      expect(output).toContain("🔍 Would have repaired (if repair was ON):");
+      expect(output).toContain("stripped null");
+      expect(output).toContain("23");
+      expect(output).toContain("wrapped bare");
+      expect(output).toContain("12");
+      expect(output).toContain("Total");
+      expect(output).toContain("47");
+    });
+
+    it("sorts by count descending (most frequent first)", () => {
+      const stats = createStats();
+      stats.wouldHaveRepairedTotal = 10;
+      stats.wouldHaveRepairedByType.set("rare type", 1);
+      stats.wouldHaveRepairedByType.set("common type", 9);
+      const output = formatWouldHaveRepaired(stats);
+      const commonIdx = output.indexOf("common type");
+      const rareIdx = output.indexOf("rare type");
+      expect(commonIdx).toBeLessThan(rareIdx);
+    });
+  });
+
+  describe("createStats — wouldHaveRepaired fields initialized", () => {
+    it("initializes wouldHaveRepairedByType as empty Map and total to 0", () => {
+      const stats = createStats();
+      expect(stats.wouldHaveRepairedByType).toBeInstanceOf(Map);
+      expect(stats.wouldHaveRepairedByType.size).toBe(0);
+      expect(stats.wouldHaveRepairedTotal).toBe(0);
+    });
   });
 
   it("shows zero stats when no cache data", () => {

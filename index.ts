@@ -36,7 +36,7 @@ import {
 	REPAIRABLE_TOOLS,
 } from "./repairs.js";
 import { formatDirectoryListing } from "./repairs/directory.js";
-import { createStats, recordRepairs, RepairToggle } from "./stats.js";
+import { createStats, recordRepairs, parseRepairType, RepairToggle } from "./stats.js";
 import {
 	recordEvent,
 	readAllEvents,
@@ -263,10 +263,17 @@ export default function (pi: ExtensionAPI) {
 	pruneOldSessions(50);
 
 	// ─── TUI indicator: show/hide repair status in footer ───
+	// Strategy: try multiple surfaces in order of preference, all wrapped in
+	// try/catch since the runner may not have bound every method yet.
+	//   1. setStatus  — pi's built-in footer slot ("extension statuses")
+	//   2. setTitle   — terminal window/tab title (always visible in tmux/iTerm)
+	// At least one of these will display in any pi mode (TUI/RPC/print).
 	function setRepairStatus(ctx: any): void {
 		if (!ctx.hasUI) return;
 		const display = repairToggle.getStatusDisplay();
-		ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", display));
+		const styled = ctx.ui.theme.fg("accent", display);
+		try { ctx.ui.setStatus("repair-layer", styled); } catch { /* no-op */ }
+		try { ctx.ui.setTitle(`🔧 ${display} | pi`); } catch { /* no-op */ }
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -318,6 +325,20 @@ export default function (pi: ExtensionAPI) {
 			const wouldHaveRepaired = originalJson !== repairedJson
 				? summarizeRepairs(originalInputClone, withDefaults)
 				: [];
+
+			// G3 surface: count would-have-repaired items by type for in-memory
+			// surfacing in /repair-stats-session. Mirrors the JSONL aggregation
+			// in recorder.aggregateStats (bySkippedRepairType).
+			if (wouldHaveRepaired.length > 0) {
+				stats.wouldHaveRepairedTotal += wouldHaveRepaired.length;
+				for (const detail of wouldHaveRepaired) {
+					const type = parseRepairType(detail);
+					if (type) {
+						const count = stats.wouldHaveRepairedByType.get(type) ?? 0;
+						stats.wouldHaveRepairedByType.set(type, count + 1);
+					}
+				}
+			}
 
 			eventSeq++;
 			recordEvent({

@@ -32,6 +32,7 @@ function createFakePi(): FakePi {
     ui: {
       theme: { fg: (_color: string, s: string) => s },
       setStatus: () => {},
+      setTitle: (_title: string) => {},
       notify: () => {},
     },
     hasUI: false,
@@ -373,5 +374,31 @@ describe("extension integration — guidance join cap", () => {
       expect(text).toMatch(/older \d+ guidance item/);
     }
     // If cap not triggered (rare), text is just the join (≤ 2000 chars)
+  });
+});
+
+describe("extension integration — persistent status indicator (setTitle)", () => {
+  it("setTitle is called with repair status on session_start and toggle", async () => {
+    const fake = createFakePi();
+    fake.ctx.hasUI = true; // setRepairStatus bails early without UI
+    const titles: string[] = [];
+    fake.ctx.ui.setTitle = (t: string) => { titles.push(t); };
+
+    await loadExtension(fake);
+    await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
+
+    // session_start should call setTitle with the on-state
+    expect(titles.length).toBeGreaterThan(0);
+    expect(titles[titles.length - 1]).toContain("repair: on");
+
+    // Toggle OFF: setTitle should reflect the new state
+    await fake.commands.get("repair-off")!.handler({}, fake.ctx);
+    expect(titles[titles.length - 1]).toContain("repair: off");
+    expect(titles[titles.length - 1]).toContain("analytics");
+
+    // Toggle back ON
+    await fake.commands.get("repair-on")!.handler({}, fake.ctx);
+    expect(titles[titles.length - 1]).toContain("repair: on");
+    expect(titles[titles.length - 1]).not.toContain("off");
   });
 });

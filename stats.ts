@@ -73,6 +73,8 @@ export interface RepairStats {
   sequentials: number;
   guidanceInjections: number;
   guidanceSuppressed: number;
+  wouldHaveRepairedByType: Map<RepairType, number>;
+  wouldHaveRepairedTotal: number;
   totalCacheRead: number;
   totalCacheWrite: number;
   totalUncachedInput: number;
@@ -101,6 +103,8 @@ export function createStats(): RepairStats {
     sequentials: 0,
     guidanceInjections: 0,
     guidanceSuppressed: 0,
+    wouldHaveRepairedByType: new Map<RepairType, number>(),
+    wouldHaveRepairedTotal: 0,
     totalCacheRead: 0,
     totalCacheWrite: 0,
     totalUncachedInput: 0,
@@ -214,4 +218,46 @@ export function formatStats(stats: RepairStats): string {
   }
 
   return [header, separator, ...lines, separator, totalLine].join("\n");
+}
+
+/**
+ * Format the "would have repaired" section (G3 surface).
+ *
+ * Shows what repairs would have been applied if the toggle was ON.
+ * Aggregated per-repair-type from OFF-branch events recorded this session.
+ *
+ * Convention: if the count is zero, returns a one-liner saying so. Otherwise
+ * returns a table matching `formatStats` style.
+ */
+export function formatWouldHaveRepaired(stats: RepairStats): string {
+  if (stats.wouldHaveRepairedTotal === 0) {
+    return "🔍 Would have repaired (if repair was ON): 0 (no skipped events this session)";
+  }
+
+  const sorted = Array.from(stats.wouldHaveRepairedByType.entries()).sort(
+    (a, b) => b[1] - a[1],
+  );
+
+  const maxTypeLen = Math.max(
+    ...sorted.map(([type]) => type.length),
+    "Repair Type".length,
+  );
+
+  const lines: string[] = [];
+  for (const [type, count] of sorted) {
+    const pct = Math.round((count / stats.wouldHaveRepairedTotal) * 100);
+    lines.push(
+      `${type.padEnd(maxTypeLen)}  ${String(count).padStart(5)}  ${String(pct).padStart(3)}%`,
+    );
+  }
+
+  const header = `${"Repair Type".padEnd(maxTypeLen)}  ${"Count".padStart(5)}  ${"%".padStart(3)}`;
+  const separator = "-".repeat(header.length);
+  const totalLine = `${"Total".padEnd(maxTypeLen)}  ${String(stats.wouldHaveRepairedTotal).padStart(5)}`;
+
+  return [
+    "🔍 Would have repaired (if repair was ON):",
+    "",
+    ...[header, separator, ...lines, separator, totalLine],
+  ].join("\n");
 }
