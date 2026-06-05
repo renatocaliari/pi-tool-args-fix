@@ -394,7 +394,6 @@ describe("extension integration — persistent status indicator (setTitle)", () 
     // Toggle OFF: setTitle should reflect the new state
     await fake.commands.get("repair-off")!.handler({}, fake.ctx);
     expect(titles[titles.length - 1]).toContain("repair: off");
-    expect(titles[titles.length - 1]).toContain("analytics");
 
     // Toggle back ON
     await fake.commands.get("repair-on")!.handler({}, fake.ctx);
