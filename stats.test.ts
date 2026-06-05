@@ -84,9 +84,19 @@ describe("RepairToggle", () => {
     expect(t.getStatusDisplay()).toBe("🔧 repair: on");
   });
 
-  it("getStatusDisplay() shows off when disabled", () => {
+  it("getStatusDisplay() shows off when disabled (with analytics note)", () => {
     const t = new RepairToggle(false);
-    expect(t.getStatusDisplay()).toBe("🔧 repair: off");
+    expect(t.getStatusDisplay()).toBe("🔧 repair: off (analytics + logs still on)");
+  });
+
+  it("getStatusDisplay() makes it clear analytics still flow when off", () => {
+    const t = new RepairToggle(false);
+    // CoC: when off, user must not think EVERYTHING is off. The status
+    // explicitly tells them analytics + logs are still on, so they don't
+    // expect /repair-cache-info to return empty.
+    const display = t.getStatusDisplay();
+    expect(display).toContain("off");
+    expect(display).toContain("analytics");
   });
 
   it("getNotifyMessage() shows auto-repaired when on", () => {
@@ -118,7 +128,7 @@ describe("RepairToggle", () => {
     const t = new RepairToggle(true);
     expect(t.getStatusDisplay()).toBe("🔧 repair: on");
     t.toggle();
-    expect(t.getStatusDisplay()).toBe("🔧 repair: off");
+    expect(t.getStatusDisplay()).toBe("🔧 repair: off (analytics + logs still on)");
     t.toggle();
     expect(t.getStatusDisplay()).toBe("🔧 repair: on");
   });
@@ -365,6 +375,22 @@ describe("formatCacheInfo", () => {
 
     // totalInput = 100K, hit rate = 60%
     expect(output).toContain("60.0% hit rate");
+  });
+
+  it("shows cap-suppressed count in cache info (P4 surface)", () => {
+    const stats = createStats();
+    stats.guidanceInjections = 10;
+    stats.guidanceSuppressed = 3; // 3 items dropped by the 2000-char cap
+    const output = formatCacheInfo(stats);
+    // User-facing: tells them guidance was suppressed and points to JSONL.
+    expect(output).toContain("Guidance items suppressed by cap: 3");
+    expect(output).toContain("see JSONL for full history");
+  });
+
+  it("shows 0 suppressed by default (no noise when cap never triggered)", () => {
+    const stats = createStats();
+    const output = formatCacheInfo(stats);
+    expect(output).toContain("Guidance items suppressed by cap: 0");
   });
 
   it("shows zero stats when no cache data", () => {

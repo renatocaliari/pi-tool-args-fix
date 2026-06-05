@@ -41,7 +41,9 @@ export class RepairToggle {
 
   /** Status text for UI display. */
   getStatusDisplay(): string {
-    return this.enabled ? "🔧 repair: on" : "🔧 repair: off";
+    return this.enabled
+      ? "🔧 repair: on"
+      : "🔧 repair: off (analytics + logs still on)";
   }
 
   /** Notification message for the user. */
@@ -70,6 +72,7 @@ export interface RepairStats {
   totalRepairs: number;
   sequentials: number;
   guidanceInjections: number;
+  guidanceSuppressed: number;
   totalCacheRead: number;
   totalCacheWrite: number;
   totalUncachedInput: number;
@@ -97,6 +100,7 @@ export function createStats(): RepairStats {
     totalRepairs: 0,
     sequentials: 0,
     guidanceInjections: 0,
+    guidanceSuppressed: 0,
     totalCacheRead: 0,
     totalCacheWrite: 0,
     totalUncachedInput: 0,
@@ -137,6 +141,7 @@ export function formatCacheInfo(stats: RepairStats): string {
     ``,
     `This extension's cache-safety contract:`,
     `  Guidance items queued: ${stats.guidanceInjections}  (unique, post-execution, side-channel only)`,
+    `  Guidance items suppressed by cap: ${stats.guidanceSuppressed}  (see JSONL for full history)`,
     ``,
     `LLM cache hit rate (provider-reported):`,
     `  Total input:    ${formatTokens(totalInput)}`,

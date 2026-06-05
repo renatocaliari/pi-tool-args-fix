@@ -824,6 +824,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (suppressedCount > 0) {
 			guidanceText = `(${suppressedCount} older guidance item${suppressedCount === 1 ? "" : "s"} suppressed — see JSONL log for full history)\n\n${guidanceText}`;
+			stats.guidanceSuppressed += suppressedCount;
 		}
 
 		const messages = [...event.messages];
