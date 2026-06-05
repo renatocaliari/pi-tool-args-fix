@@ -2,7 +2,7 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
-## [1.9.10-alpha] - 2026-06-05
+## [0.15.11-alpha] - 2026-06-05
 
 ### Fixed
 
