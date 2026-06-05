@@ -286,9 +286,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		// Attempt early; may not stick if pi hasn't finished TUI init yet.
-		// context event below guarantees the title is set for the first LLM turn.
+		// Best-effort early attempt (may not stick — pi overrides title during TUI init).
 		setRepairStatus(ctx);
+		// Retry after TUI finishes init so the title sticks.
+		setTimeout(() => setRepairStatus(ctx), 2000);
 
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {
@@ -856,9 +857,7 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	pi.on("context", async (event, ctx) => {
-		// TUI is fully initialized now — repair title should stick.
-		setRepairStatus(ctx);
+	pi.on("context", async (event, _ctx) => {
 		for (const m of event.messages) {
 			const msg = (m as any)?.message ?? m;
 			if (msg?.role === "assistant" && msg?.usage) {
