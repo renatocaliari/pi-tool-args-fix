@@ -9,7 +9,9 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as nodeFs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	applyRelationalDefaults,
@@ -145,6 +147,78 @@ function buildToolResultEvent(
 const MAX_GUIDANCE_INJECTION_CHARS = 2000;
 
 /**
+ * Get the path to the user's pi settings file.
+ */
+function getSettingsPath(): string {
+	return path.join(homedir(), ".pi", "agent", "settings.json");
+}
+
+/**
+ * Auto-configure powerline customItems for the repair-layer status.
+ *
+ * Runs once per session_start (the idempotency check is fast: 20μs).
+ * Only touches settings.json if ALL of:
+ *   1. settings.json exists AND has a "powerline" key with customItems
+ *   2. repair-layer is NOT already in customItems
+ *
+ * Once configured, the user sees "🔧 repair: on/off" as a dedicated
+ * powerline segment on the right side of the status bar.
+ */
+function setupPowerlineCustomItem(): void {
+	const settingsPath = getSettingsPath();
+	if (!nodeFs.existsSync(settingsPath)) return;
+
+	try {
+		const raw = nodeFs.readFileSync(settingsPath, "utf-8");
+		const settings = JSON.parse(raw);
+		if (typeof settings !== "object" || settings === null) return;
+
+		const pl = (settings as Record<string, unknown>).powerline;
+		if (typeof pl !== "object" || pl === null) return;
+
+		const powerline = pl as Record<string, unknown>;
+
+		// Normalize customItems to an array
+		let items: Array<Record<string, unknown>> = [];
+		if (Array.isArray(powerline.customItems)) {
+			items = powerline.customItems as Array<Record<string, unknown>>;
+		} else if (typeof powerline.customItems === "object" && powerline.customItems !== null) {
+			items = Object.values(powerline.customItems as Record<string, unknown>).filter(
+				(v): v is Record<string, unknown> => typeof v === "object" && v !== null,
+			);
+		}
+
+		// Check if repair-layer is already configured
+		const exists = items.some(
+			(item) =>
+				typeof item === "object" &&
+				item !== null &&
+				((item as Record<string, unknown>).id === "repair-layer" ||
+					(item as Record<string, unknown>).statusKey === "repair-layer"),
+		);
+		if (exists) return;
+
+		// Add the customItem
+		const newItem: Record<string, unknown> = {
+			id: "repair-layer",
+			position: "right",
+			prefix: "🔧 ",
+			color: "yellow",
+		};
+
+		if (Array.isArray(powerline.customItems)) {
+			(powerline.customItems as Array<Record<string, unknown>>).push(newItem);
+		} else {
+			powerline.customItems = [newItem];
+		}
+
+		nodeFs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+	} catch {
+		// Swallow — powerline integration is a complement, not critical
+	}
+}
+
+/**
  * Cache-stable hash for guidance keys.
  *
  * FNV-1a 32-bit → base-36 string (~7 chars). Used to derive deterministic,
@@ -268,16 +342,22 @@ export default function (pi: ExtensionAPI) {
 	//   1. setStatus  — pi's built-in footer slot ("extension statuses")
 	//   2. setTitle   — terminal window/tab title (always visible in tmux/iTerm)
 	// At least one of these will display in any pi mode (TUI/RPC/print).
+	// Note: setStatus value is PLAIN TEXT (no ANSI codes) so powerline's
+	// normalizeCompactExtensionStatus picks it up. The powerline handles
+	// coloring via its own theme system using customItems config.
 	function setRepairStatus(ctx: any): void {
 		if (!ctx.hasUI) return;
 		const display = repairToggle.getStatusDisplay();
-		const styled = ctx.ui.theme.fg("accent", display);
-		try { ctx.ui.setStatus("repair-layer", styled); } catch { /* no-op */ }
+		try { ctx.ui.setStatus("repair-layer", display); } catch { /* no-op */ }
 		try { ctx.ui.setTitle(`🔧 ${display} | pi`); } catch { /* no-op */ }
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		setRepairStatus(ctx);
+
+		// Auto-configure powerline customItems (one-time, only if powerline
+		// is already configured and repair-layer is not yet in customItems).
+		setupPowerlineCustomItem();
 
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {

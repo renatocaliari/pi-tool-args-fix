@@ -63,6 +63,52 @@ export function registerCommands(
     },
   });
 
+  // ─── Command: explicit status check (powerline-friendly) ───────
+  pi.registerCommand("repair-status", {
+    description: "Show repair layer status (toggle state + quick summary)",
+    handler: async (_args: any, uiCtx: any) => {
+      const state = repairToggle.isEnabled() ? "on" : "off";
+      const statusLine = `🔧 repair: ${state}`;
+      const analyticsNote = repairToggle.isEnabled()
+        ? ""
+        : "\n📊 analytics + logs still on (check with /repair-cache-info)";
+
+      // Build a compact summary
+      const parts: string[] = [];
+      if (stats.guidanceInjections > 0) parts.push(`guidance: ${stats.guidanceInjections}`);
+      if (stats.totalRepairs > 0) parts.push(`repairs applied: ${stats.totalRepairs}`);
+      if (stats.wouldHaveRepairedTotal > 0) parts.push(`would-have-repaired: ${stats.wouldHaveRepairedTotal}`);
+      if (stats.guidanceSuppressed > 0) parts.push(`suppressed by cap: ${stats.guidanceSuppressed}`);
+      const summary = parts.length > 0 ? `  ${parts.join(" · ")}` : "  no activity recorded this session";
+
+      // Powerline tip (only in TUI, user can see footer)
+      let powerlineTip = "";
+      if (uiCtx.hasUI) {
+        powerlineTip = [
+          "",
+          "💡 Powerline integration:",
+          '  Add to ~/.pi/agent/settings.json:',
+          '  {',
+          '    "powerline": {',
+          '      "customItems": [',
+          '        { "id": "repair-layer", "position": "right", "prefix": "🔧 ", "color": "yellow" }',
+          '      ]',
+          '    }',
+          '  }',
+          '  Then reload: /reload',
+        ].join("\n");
+      }
+
+      const output = [statusLine, summary, analyticsNote, powerlineTip].join("\n");
+
+      if (uiCtx.hasUI) {
+        uiCtx.ui.notify(output, "info");
+      } else {
+        console.log(output);
+      }
+    },
+  });
+
   // ─── Command: in-memory session repair stats ─────────────────────
   pi.registerCommand("repair-stats-session", {
     description: "Show repair layer statistics for this session (in-memory)",
