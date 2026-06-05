@@ -5,6 +5,38 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4-alpha] - 2026-06-05
+
+### Added
+
+- **Impact footer in `wouldHaveRepaired`** — `formatWouldHaveRepaired`
+  now appends a context line when total tool calls > 0:
+  `Impact: X of Y tool calls (Z%) had arg issues while OFF`. The
+  user can now gauge the cost of running with the toggle off
+  (raw count + share of calls that were affected).
+  - New `stats.totalToolCalls` field, incremented in `tool_call`.
+  - 3 new tests (impact line present, omitted when 0, init field).
+
+### Removed
+
+- **Dead exports** — removed `export` from 3 internal-only symbols
+  (`BLINDSPOT_SUGGESTIONS`, `LoopSeverity`, `RepairType`). All were
+  only used in their defining files.
+
+- **Backward-compat params** — removed unused parameters from 3
+  guidance functions (`_lastReadTurn`, `_consecutiveCount`,
+  `_errorDetails`). No longer needed, no backward compatibility.
+  Updated all call sites and 4 tests that exercised the old API.
+
+- **Misleading comment** in `recorder.ts` — "Re-export for backward
+  compatibility" → "Re-exports" (the re-exports are actively used
+  via the barrel, not legacy shims).
+
+### Tests
+
+- 550 passing (551 → -1 net: removed 4 backward-compat + guidance
+  consolidation tests, added 3 new impact-footer tests).
+
 ## [1.9.3-alpha] - 2026-06-05
 
 ### Added (UX visibility — closes G3)
