@@ -274,8 +274,15 @@ export default function (pi: ExtensionAPI) {
 	function setRepairStatus(ctx: any): void {
 		if (!ctx.hasUI) return;
 		const display = repairToggle.getStatusDisplay();
+		const isOn = repairToggle.isEnabled();
 		try { ctx.ui.setStatus("repair-layer", display); } catch { /* no-op */ }
-		try { ctx.ui.setTitle(`🔧 ${display} | pi`); } catch { /* no-op */ }
+		// Title: 🔧 before 'repair: on' only when ON. When OFF, no 🔧.
+		// The title REPLACES whatever pi had before (no getTitle API).
+		// Keeping it short: '🔧 repair: on | pi' vs 'repair: off | pi'.
+		try {
+			const title = isOn ? `🔧 repair: on | pi` : `repair: off | pi`;
+			ctx.ui.setTitle(title);
+		} catch { /* no-op */ }
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
