@@ -5,6 +5,45 @@ All notable changes to `pi-tool-repair-layer` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3-alpha] - 2026-06-05
+
+### Added (UX visibility — closes G3)
+
+- **`would-have-repaired` surface** — when the toggle is OFF, the
+  user can now see exactly what repairs would have been applied.
+  - New in-memory tracking: `wouldHaveRepairedByType` (Map) and
+    `wouldHaveRepairedTotal`. Mirrors the JSONL aggregation in
+    `recorder.aggregateStats.bySkippedRepairType` for consistency.
+  - New `formatWouldHaveRepaired(stats)` formatter: zero case
+    shows a one-liner, non-zero shows a sorted table with total.
+  - Integrated into `/repair-stats-session` output as
+    `🔍 Would have repaired (if repair was ON)` section.
+  - User can now see the cost of running with the toggle off.
+
+### Fixed
+
+- **Persistent status indicator (footer) was invisible** — `setStatus`
+  alone is unreliable (runner binds it as a no-op stub until core
+  binding completes). The user couldn't tell when repair was on/off.
+  - `setRepairStatus` now calls BOTH `setStatus` and `setTitle`,
+    wrapped in `try/catch` so missing methods don't break the handler.
+  - `setTitle` is the real persistent API — writes to the terminal
+    window/tab title. Visible in tmux/iTerm/Ghostty whenever the
+    terminal is in focus.
+  - Title format: `🔧 repair: on | pi` (or off-state with analytics
+    note, e.g. `🔧 repair: off (analytics + logs still on) | pi`).
+  - New test in `extension-integration.test.ts` spies on `setTitle`
+    and asserts the title updates on `session_start`, `/repair-off`,
+    and `/repair-on`. Required adding `setTitle` to the fake ctx.
+
+### Tests
+
+- 5 new tests (551 total):
+  - 4 in `stats.test.ts` for `formatWouldHaveRepaired` (zero,
+    breakdown, sort order, init state)
+  - 1 init-state test for new `createStats` fields
+  - 1 in `extension-integration.test.ts` for the setTitle sequence
+
 ## [1.9.2-alpha] - 2026-06-05
 
 ### Added (UX visibility)
