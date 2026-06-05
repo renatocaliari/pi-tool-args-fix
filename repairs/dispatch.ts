@@ -257,6 +257,11 @@ export function repairObjectFieldsWithTrace(
       continue;
     }
 
+    // DRY NOTE: the strip rules above (null, null-like) MUST mirror the
+    // matching classification in `summarizeRepairs` (handlers/utils.ts). If
+    // you add a new strip rule here, add a corresponding `stripped` entry
+    // there. Format can differ; the *set* of conditions must not.
+
     // Skip number fields (don't repair numbers)
     if (isNumberField(key) && typeof value === "number") {
       result[key] = value;

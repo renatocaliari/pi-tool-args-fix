@@ -333,16 +333,13 @@ Track cache hit rate with `/repair-cache-info`:
 ─────────────────
 
 This extension's cache-safety contract:
-  Guidance injections: 0  (post-execution, side-channel only)
+  Guidance items queued: 0  (unique, post-execution, side-channel only)
 
 LLM cache hit rate (provider-reported):
   Total input:    75.4K
-  Cache reads:    45.1K (60% hit rate) @ $0.50/M = $0.02
-  Cache writes:   12.3K (16% of total) @ $6.25/M = $0.08
-  Uncached:       17.9K @ $5.00/M = $0.09
-
-Session cost so far: $0.19
-vs no cache:         $0.38 (saving $0.19)
+  Cache reads:    45.1K (60.0% hit rate)
+  Cache writes:   12.3K (16.3% of total)
+  Uncached:       18.0K
 
 Cache contract: this extension follows the 4-rule pattern
 (static cutoff + one-shot + byte-deterministic + stable position).

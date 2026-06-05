@@ -6,10 +6,6 @@
  * 1. tool_call  → pre-execution repair + validation, queues guidance
  * 2. tool_result → analytics only, queues guidance, returns undefined (history untouched)
  * 3. context    → injects queued guidance into shallow-copied messages (LLM sees it, no cache impact)
- *
- * Pre-execution repairs (null stripping, array wrapping, etc.) have ZERO cache impact.
- * Post-execution guidance NEVER enters the conversation history.
- * The only cache miss per error type is the FIRST occurrence of a minimal block message.
  */
 
 import * as fs from "node:fs/promises";
@@ -44,7 +40,6 @@ import { createStats, recordRepairs, RepairToggle } from "./stats.js";
 import {
 	recordEvent,
 	readAllEvents,
-	aggregateStats,
 	pruneOldSessions,
 	ConsecutiveFailureTracker,
 	ConsecutiveEmptySearchTracker,
@@ -133,13 +128,26 @@ function buildToolResultEvent(
 }
 
 /**
+ * Cache-stable hash for guidance keys.
+ *
+ * FNV-1a 32-bit → base-36 string (~7 chars). Used to derive deterministic,
+ * short, collision-resistant key segments for guidance dedup where the raw
+ * text (error messages, JSON blobs) would make the key long or unstable.
+ * NOT a cryptographic hash — just stable enough for one-shot-per-session
+ * dedup. ~2³² buckets, irrelevant for our workload.
+ */
+function fnv1a(s: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return h.toString(36);
+}
+
+/**
  * Queue guidance for the next `context` event if not already injected this session.
  * Returns true if guidance was queued (first occurrence), false if already injected.
- *
- * ALL guidance goes through this function — it ensures:
- * 1. One-shot per (key) per session
- * 2. stats counter is incremented
- * 3. Guidance text enters pendingGuidance (not tool_result.content)
  */
 function queueGuidance(key: string, text: string, injectStats: boolean): boolean {
 	if (injectedGuidance.has(key)) return false;
@@ -217,11 +225,7 @@ async function buildEditMismatchGuidanceText(
 	}
 }
 
-/**
- * Minimal block message returned by pre-execution validators.
- * Always the same string — byte-identical across all sessions → cache-friendly.
- * The detailed guidance goes via pendingGuidance → context event → shallow copy.
- */
+/** Minimal block message returned by pre-execution validators. */
 const BLOCK_MESSAGE = "[repair-layer] blocked";
 
 // ─── Main Extension ───────────────────────────────────────────────────────
@@ -239,10 +243,7 @@ export default function (pi: ExtensionAPI) {
 	lastEditPerFile.clear();
 
 	// Prune old session logs at startup
-	const pruned = pruneOldSessions(50);
-	if (pruned > 0) {
-		console.log(`[repair-layer] pruned ${pruned} old session log(s) (retention: 50)`);
-	}
+	pruneOldSessions(50);
 
 	// ─── TUI indicator: show/hide repair status in footer ───
 	function setRepairStatus(ctx: any): void {
@@ -256,12 +257,10 @@ export default function (pi: ExtensionAPI) {
 
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {
-			const agg = aggregateStats(allEvents);
 			const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
 			ctx.ui.notify(
-				`📊 Repair Layer — Global Overview\n` +
-				`${sessionIds.size} session(s), ${allEvents.length} events, ${agg.totalRepairs} repairs\n` +
-				`Type /repair-stats-session for session details, /repair-stats-global for all-session aggregate, /repair-suggest to suggest new fixes.`,
+				`📊 Repair Layer Active — ${sessionIds.size} session(s) logged.\n` +
+				`Type /repair-stats-session for details, /repair-suggest to suggest new fixes.`,
 				"info",
 			);
 		}
@@ -276,7 +275,6 @@ export default function (pi: ExtensionAPI) {
 	// ─── tool_call handler — pre-execution repair + validation ───────────
 	pi.on("tool_call", async (event, ctx) => {
 		const isOff = !repairToggle.isEnabled();
-
 		const repairableTools = REPAIRABLE_TOOLS;
 
 		if (!repairableTools.has(event.toolName)) return undefined;
@@ -284,14 +282,24 @@ export default function (pi: ExtensionAPI) {
 		const originalInput = event.input as Record<string, unknown>;
 		if (!originalInput || typeof originalInput !== "object") return undefined;
 
-		// When OFF: compute what WOULD have been repaired, then return early
+		// Clone original input for accurate logging and repair detection
+		// (repair functions mutate objects in-place)
+		const originalInputClone = JSON.parse(JSON.stringify(originalInput));
+		const originalNullKeys = Object.entries(originalInputClone)
+			.filter(([_, v]) => v === null)
+			.map(([k]) => k);
+
+		// When OFF: compute what WOULD have been repaired, then return early.
+		// Use the pure (non-trace) repair function — we discard the trace summary
+		// anyway and recompute it via summarizeRepairs below.
 		if (isOff) {
-			const originalJson = JSON.stringify(originalInput);
-			const repaired = repairObjectFields(originalInput);
-			const withDefaults = applyRelationalDefaults(repaired);
+			const repairedFields = repairObjectFields(originalInputClone);
+			const withDefaults = applyRelationalDefaults(repairedFields);
 			const repairedJson = JSON.stringify(withDefaults);
+			const originalJson = JSON.stringify(originalInputClone);
+
 			const wouldHaveRepaired = originalJson !== repairedJson
-				? summarizeRepairs(originalInput, withDefaults)
+				? summarizeRepairs(originalInputClone, withDefaults)
 				: [];
 
 			eventSeq++;
@@ -312,20 +320,20 @@ export default function (pi: ExtensionAPI) {
 				wasHandled: false,
 				handleType: null,
 				blindspotCategory: null,
-				inputKeys: Object.keys(originalInput),
-				inputNullKeys: [],
+				inputKeys: Object.keys(originalInputClone),
+				inputNullKeys: originalNullKeys,
 				inputExtraProps: [],
 			});
 			return undefined;
 		}
 
-		const originalJson = JSON.stringify(originalInput);
+		const originalJson = JSON.stringify(originalInputClone);
 
-		// Step 1: Apply field-level repairs
-		const repaired = repairObjectFields(originalInput);
+		// Step 1: Apply field-level repairs (pure function returns new object)
+		const repairedFields = repairObjectFields(originalInput);
 
 		// Step 2: Apply relational defaults
-		const withDefaults = applyRelationalDefaults(repaired);
+		const withDefaults = applyRelationalDefaults(repairedFields);
 
 		// ── Step 3a: Auto-timeout injection (bash) ────────────────────
 		if (event.toolName === "bash") {
@@ -354,7 +362,6 @@ export default function (pi: ExtensionAPI) {
 				} catch { /* skip */ }
 			}
 			if (invalidPaths.length > 0 && event.toolName !== "bash") {
-				// Queue detailed guidance via side channel, return minimal block message
 				queueGuidance(
 					`path:${event.toolName}:${JSON.stringify(invalidPaths)}`,
 					buildPathValidationGuidance(invalidPaths, event.toolName),
@@ -378,20 +385,17 @@ export default function (pi: ExtensionAPI) {
 					wasHandled: true,
 					handleType: "path_validation",
 					blindspotCategory: null,
-					inputKeys: Object.keys(originalInput),
-					inputNullKeys: [],
+					inputKeys: Object.keys(originalInputClone),
+					inputNullKeys: originalNullKeys,
 					inputExtraProps: [],
 				});
-				return {
-					content: [{ type: "text" as const, text: BLOCK_MESSAGE }],
-					isError: true,
-				};
+				return { content: [{ type: "text" as const, text: BLOCK_MESSAGE }], isError: true };
 			}
 		}
 
 		// ── Step 3b-ii: EISDIR pre-flight (read/read_file) ──────────────
 		if ((event.toolName === "read" || event.toolName === "read_file") && !hasContentField) {
-			const readPath = originalInput?.path as string | undefined;
+			const readPath = withDefaults?.path as string | undefined;
 			if (typeof readPath === "string") {
 				const resolved = readPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", readPath.slice(2)) : readPath;
 				try {
@@ -399,34 +403,31 @@ export default function (pi: ExtensionAPI) {
 					if (stat.isDirectory()) {
 						const entries = await fs.readdir(resolved);
 						const { listingContent } = formatDirectoryListing(resolved, entries, event.toolName);
-					eventSeq++;
-					recordEvent({
-						ts: new Date().toISOString(),
-						eventType: "tool_result",
-						sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
-						turnIndex: eventSeq,
-						toolName: event.toolName,
-						provider: ctx.model?.provider ?? "unknown",
-						model: ctx.model?.id ?? "unknown",
-						repairs: ["directory fallback"],
-						wasRepaired: true,
-						repairSkipped: false,
-						wouldHaveRepaired: [],
-						executionFailed: false,
-						executionErrorType: null,
-						wasHandled: true,
-						handleType: "directory_fallback",
-						blindspotCategory: null,
-						inputKeys: Object.keys(originalInput),
-						inputNullKeys: [],
-						inputExtraProps: [],
-					});
-						return {
-							content: [{ type: "text" as const, text: listingContent }],
-							isError: false,
-						};
+						eventSeq++;
+						recordEvent({
+							ts: new Date().toISOString(),
+							eventType: "tool_result",
+							sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+							turnIndex: eventSeq,
+							toolName: event.toolName,
+							provider: ctx.model?.provider ?? "unknown",
+							model: ctx.model?.id ?? "unknown",
+							repairs: ["directory fallback"],
+							wasRepaired: true,
+							repairSkipped: false,
+							wouldHaveRepaired: [],
+							executionFailed: false,
+							executionErrorType: null,
+							wasHandled: true,
+							handleType: "directory_fallback",
+							blindspotCategory: null,
+							inputKeys: Object.keys(originalInputClone),
+							inputNullKeys: originalNullKeys,
+							inputExtraProps: [],
+						});
+						return { content: [{ type: "text" as const, text: listingContent }], isError: false };
 					}
-				} catch { /* not a dir — let tool handle */ }
+				} catch { /* skip */ }
 			}
 		}
 
@@ -436,9 +437,9 @@ export default function (pi: ExtensionAPI) {
 		// ── Step 3c: Staleness check (edit tool) ───────────────────────
 		if (event.toolName === "edit" || event.toolName === "edit_file") {
 			if (event.toolName === "edit") {
-				editPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+				editPath = withDefaults?.path as string | undefined;
 			} else {
-				const files = (event.input as Record<string, unknown>)?.files as Array<Record<string, unknown>> | undefined;
+				const files = withDefaults?.files as Array<Record<string, unknown>> | undefined;
 				if (files && files.length > 0) {
 					editPath = files[0]?.path as string | undefined;
 				}
@@ -449,12 +450,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					const content = await fs.readFile(resolved, "utf-8");
 					if (contentHashCache.isStale(resolved, content)) {
-						// Queue guidance via side channel, return minimal block message
-						queueGuidance(
-							`stale:${resolved}`,
-							buildStalenessGuidance(),
-							true,
-						);
+						queueGuidance(`stale:${resolved}`, buildStalenessGuidance(), true);
 						eventSeq++;
 						recordEvent({
 							ts: new Date().toISOString(),
@@ -473,16 +469,13 @@ export default function (pi: ExtensionAPI) {
 							wasHandled: true,
 							handleType: "staleness_check",
 							blindspotCategory: null,
-							inputKeys: Object.keys(originalInput),
-							inputNullKeys: [],
+							inputKeys: Object.keys(originalInputClone),
+							inputNullKeys: originalNullKeys,
 							inputExtraProps: [],
 						});
-						return {
-							content: [{ type: "text" as const, text: BLOCK_MESSAGE }],
-							isError: true,
-						};
+						return { content: [{ type: "text" as const, text: BLOCK_MESSAGE }], isError: true };
 					}
-				} catch { /* new file — fine */ }
+				} catch { /* skip */ }
 			}
 		}
 
@@ -490,13 +483,12 @@ export default function (pi: ExtensionAPI) {
 		if (event.toolName === "edit" && editPath) {
 			const prev = lastEditPerFile.get(editPath);
 			if (prev) {
-				const edits = (event.input as Record<string, unknown>)?.edits as Array<Record<string, unknown>> | undefined;
+				const edits = withDefaults?.edits as Array<Record<string, unknown>> | undefined;
 				if (edits && edits.length > 0) {
 					const currentOldText = edits[0]?.oldText as string | undefined;
 					if (currentOldText) {
 						const currentFirstLine = currentOldText.split("\n")[0]!;
 						if (prev.firstLine === currentFirstLine || prev.oldText === currentOldText) {
-							// Queue guidance via side channel
 							queueGuidance(
 								`seq:${editPath}:${JSON.stringify([prev.firstLine, currentFirstLine])}`,
 								buildSequentialEditGuidance(prev.firstLine, currentFirstLine, editPath),
@@ -522,50 +514,50 @@ export default function (pi: ExtensionAPI) {
 								wasHandled: true,
 								handleType: "sequential_overlap",
 								blindspotCategory: null,
-								inputKeys: Object.keys(originalInput),
-								inputNullKeys: [],
+								inputKeys: Object.keys(originalInputClone),
+								inputNullKeys: originalNullKeys,
 								inputExtraProps: [],
 							});
-							return {
-								content: [{ type: "text" as const, text: BLOCK_MESSAGE }],
-								isError: true,
-							};
+							return { content: [{ type: "text" as const, text: BLOCK_MESSAGE }], isError: true };
 						}
 					}
 				}
 			}
 		}
 
-		// Step 4: Check if anything changed & collect repair descriptions
+		// Step 4: Check if anything changed & apply repairs
 		const repairedJson = JSON.stringify(withDefaults);
-		const repairSummary = originalJson !== repairedJson
-			? summarizeRepairs(originalInput, withDefaults)
+		const finalRepairSummary = originalJson !== repairedJson
+			? summarizeRepairs(originalInputClone, withDefaults)
 			: [];
 
 		if (originalJson !== repairedJson) {
-			recordRepairs(stats, repairSummary);
-
-			// Queue repair notification for context event
-			if (repairSummary.length > 0) {
-				const repairNotice = `🔧 ${event.toolName}: ${repairSummary.join("; ")}`;
-				queueGuidance(`repair:${event.toolName}:${originalJson.length}`, repairNotice, true);
+			recordRepairs(stats, finalRepairSummary);
+			if (finalRepairSummary.length > 0) {
+				const repairNotice = `🔧 ${event.toolName}: ${finalRepairSummary.join("; ")}`;
+				// Cache-stable key: same repair SUMMARY = same key, regardless of input length.
+				// Previously keyed on `originalJson.length` which collided when two different
+				// inputs (different summary) happened to share a byte length — the second
+				// variant's notice was suppressed. Sorting ensures key stability when
+				// summarizeRepairs returns fields in different orders across runs.
+				const summaryKey = finalRepairSummary.slice().sort().join("|");
+				queueGuidance(`repair:${event.toolName}:${summaryKey}`, repairNotice, true);
 			}
 
+			// Update event.input in-place (this is what the tool receives)
 			const inputObj = event.input as Record<string, unknown>;
-			for (const key of Object.keys(inputObj)) {
-				delete inputObj[key];
-			}
+			for (const key of Object.keys(inputObj)) delete inputObj[key];
 			Object.assign(inputObj, withDefaults);
 
 			if (ctx.hasUI) {
-				const summary = repairSummary.slice(0, 2).join("; ");
-				const more = repairSummary.length > 2 ? ` (+${repairSummary.length - 2} more)` : "";
+				const summary = finalRepairSummary.slice(0, 2).join("; ");
+				const more = finalRepairSummary.length > 2 ? ` (+${finalRepairSummary.length - 2} more)` : "";
 				ctx.ui.setStatus("repair-layer", ctx.ui.theme.fg("accent", `🔧 ${event.toolName}: ${summary}${more}`));
 				setTimeout(() => setRepairStatus(ctx), 3000);
 			}
 		}
 
-		// ── Record previous edit state for sequential overlap detection ─
+		// ── Record previous edit state block ──
 		if (event.toolName === "edit" && editPath) {
 			const edits = (event.input as Record<string, unknown>)?.edits as Array<Record<string, unknown>> | undefined;
 			if (edits && edits.length > 0) {
@@ -576,7 +568,6 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		// Record event for post-session analysis
 		eventSeq++;
 		recordEvent({
 			ts: new Date().toISOString(),
@@ -586,7 +577,7 @@ export default function (pi: ExtensionAPI) {
 			toolName: event.toolName,
 			provider: ctx.model?.provider ?? "unknown",
 			model: ctx.model?.id ?? "unknown",
-			repairs: repairSummary,
+			repairs: finalRepairSummary,
 			wasRepaired: originalJson !== repairedJson,
 			repairSkipped: false,
 			wouldHaveRepaired: [],
@@ -595,8 +586,8 @@ export default function (pi: ExtensionAPI) {
 			wasHandled: false,
 			handleType: null,
 			blindspotCategory: null,
-			inputKeys: Object.keys(originalInput),
-			inputNullKeys: Object.entries(originalInput).filter(([_, v]) => v === null).map(([k]) => k),
+			inputKeys: Object.keys(originalInputClone),
+			inputNullKeys: originalNullKeys,
 			inputExtraProps: [],
 		});
 
@@ -631,7 +622,7 @@ export default function (pi: ExtensionAPI) {
 
 		const err = { hasError, executionErrorType, blindspotCategory };
 
-		// Phase 2: Detect empty results (analytics only)
+		// Phase 2: Detect empty results
 		if (!err.hasError && err.blindspotCategory === null) {
 			const resText = extractTextContent(event.content);
 			if (resText && (resText.trim() === "" || resText.trim() === "(no output)")) {
@@ -639,7 +630,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		// Phase 2.5: Detect empty search loops (analytics + guidance queue only)
+		// Phase 2.5: Detect empty search loops
 		if (EMPTY_SEARCH_TOOLS.has(event.toolName) && !err.hasError) {
 			const resText = extractTextContent(event.content);
 			if (resText) {
@@ -660,23 +651,12 @@ export default function (pi: ExtensionAPI) {
 					if (isEmpty) {
 						const cnt = emptySearchTracker.recordEmpty(searchPattern);
 						if (cnt >= 3) {
-							// Always record the event for analytics
 							const emptyKey = `empty:${event.toolName}:${searchPattern}`;
 							err.blindspotCategory = null;
 							const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "empty_search_loop", undefined, isOff);
 							recordEvent(rec);
 							eventSeq++;
-
-							// Queue guidance via side channel (once per pattern) — skip when toggle OFF
-							if (!isOff) {
-								queueGuidance(
-									emptyKey,
-									buildEmptySearchGuidance(searchPattern, undefined, event.toolName),
-									true,
-								);
-							}
-							// Return early — result already handled (event recorded, guidance queued).
-							// Prevents Phase 7 from recording a duplicate event.
+							if (!isOff) queueGuidance(emptyKey, buildEmptySearchGuidance(searchPattern, undefined, event.toolName), true);
 							return undefined;
 						}
 					} else {
@@ -691,48 +671,29 @@ export default function (pi: ExtensionAPI) {
 			const inputKeys = Object.keys(event.input ?? {});
 			const consecutiveCount = failureTracker.recordFailure(event.toolName, inputKeys);
 
-			if (consecutiveCount >= 3) {
-				err.blindspotCategory = "CONSECUTIVE_LOOP";
-			}
+			if (consecutiveCount >= 3) err.blindspotCategory = "CONSECUTIVE_LOOP";
 
 			if (consecutiveCount >= 1 && err.executionErrorType !== "TOOL_NOT_FOUND") {
-				// Circuit-break (7+) — skip guidance when toggle OFF
 				if (consecutiveCount >= 7 && !isOff) {
-					queueGuidance(
-						`cb:${event.toolName}`,
-						buildCircuitBreakMessage(event.toolName, undefined, undefined),
-						true,
-					);
+					queueGuidance(`cb:${event.toolName}`, buildCircuitBreakMessage(event.toolName, undefined, undefined), true);
 				}
-
-				// CLI guidance (1st failure per tool) — skip when toggle OFF
 				if (!isOff) {
-					queueGuidance(
-						`cli:${event.toolName}`,
-						getToolHelp(event.toolName),
-						true,
-					);
+					queueGuidance(`cli:${event.toolName}`, getToolHelp(event.toolName), true);
 				}
-
-				// Edit loop guidance (3+ failures on edit) — skip when toggle OFF
 				if (!isOff && (event.toolName === "edit" || event.toolName === "edit_file") && consecutiveCount >= 3) {
-					queueGuidance(
-						`edit-loop:${event.toolName}:${consecutiveCount >= 5 ? "major" : "minor"}`,
-						buildEditLoopGuidance(consecutiveCount),
-						true,
-					);
+					queueGuidance(`edit-loop:${event.toolName}:${consecutiveCount >= 5 ? "major" : "minor"}`, buildEditLoopGuidance(consecutiveCount), true);
 				}
-
-				// Enhanced EDIT_MISMATCH guidance — skip when toggle OFF
 				if (!isOff && (event.toolName === "edit" || event.toolName === "edit_file") && err.executionErrorType === "EDIT_MISMATCH") {
 					const errorText = extractTextContent(event.content) ?? "";
 					const enhanced = await buildEditMismatchGuidanceText(event, errorText);
 					if (enhanced) {
-						queueGuidance(
-							`edit-mismatch:${event.toolName}:${errorText.slice(0, 60)}`,
-							enhanced,
-							true,
-						);
+						// Cache-stable key: hash the full normalized error text.
+						// Previously used first 60 chars which collided when two errors
+						// shared a prefix but differed past the slice window. FNV-1a of
+						// the full text gives a short, deterministic, collision-resistant
+						// dedup segment.
+						const errorKey = fnv1a(errorText.trim());
+						queueGuidance(`edit-mismatch:${event.toolName}:${errorKey}`, enhanced, true);
 					}
 				}
 			}
@@ -747,34 +708,28 @@ export default function (pi: ExtensionAPI) {
 			failureTracker.recordSuccess(event.toolName);
 		}
 
-		// Phase 4: Error-type guidance (first occurrence only) — skip guidance when toggle OFF
+		// Phase 4: Error-type guidance
 		if (err.executionErrorType) {
 			const guidanceKey = `cat:${event.toolName}:${err.executionErrorType}`;
 			let guidanceText = getErrorGuidance(err.executionErrorType, event.toolName);
-
 			if (err.executionErrorType === "EDIT_MISMATCH" && !err.blindspotCategory) {
 				const errorText = extractTextContent(event.content) ?? "";
 				const enhanced = await buildEditMismatchGuidanceText(event, errorText);
 				if (enhanced) guidanceText = enhanced;
 			}
-
 			if (err.executionErrorType === "SCHEMA_VALIDATION") {
 				const errorText = extractTextContent(event.content) ?? "";
 				const translated = translateSchemaValidationError(errorText);
 				if (translated) guidanceText = `❗ ${translated}\n\n${guidanceText}`;
 			}
-
-			if (guidanceText && !isOff) {
-				queueGuidance(guidanceKey, guidanceText, true);
-			}
-
+			if (guidanceText && !isOff) queueGuidance(guidanceKey, guidanceText, true);
 			err.blindspotCategory = null;
 			const rec = buildToolResultEvent(event, ctx, ++eventSeq, err, true, "category_guidance", undefined, isOff);
 			recordEvent(rec);
 			return undefined;
 		}
 
-		// Phase 5: Record content hash for staleness tracking
+		// Phase 5: Record content hash
 		if (!err.hasError && (event.toolName === "read" || event.toolName === "read_file")) {
 			const inputPath = (event.input as Record<string, unknown>)?.path;
 			if (typeof inputPath === "string" && inputPath) {
@@ -805,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 							const { listingContent } = formatDirectoryListing(resolved, entries, "write");
 							return { content: [{ type: "text" as const, text: listingContent }], isError: false };
 						}
-					} catch { /* not a dir */ }
+					} catch { /* skip */ }
 				}
 			}
 		}
@@ -816,20 +771,7 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	// ─── context event handler — injects queued guidance via side channel ──
-	// Cache-stability invariant: we shallow-copy the messages array and ONLY push
-	// new entries. We never mutate existing message objects in place. The returned
-	// array is what the LLM sees for this turn; `event.messages` itself is never
-	// touched, so the prefix stays byte-identical and DeepSeek's cache holds.
-	// Regression test: repairs.test.ts → "context handler returns new array reference".
 	pi.on("context", async (event, _ctx) => {
-		// Always accumulate LLM cache stats from message usage, regardless
-		// of whether we'll push guidance. This gives the user visibility
-		// into their actual cache hit rate via /repair-cache-info.
-		//
-		// Source: `usage.cacheRead` and `usage.cacheWrite` on assistant
-		// messages (set by the LLM provider each turn).
-		// Per Claude's docs: "We run alerts on our prompt cache hit rate."
 		for (const m of event.messages) {
 			const msg = (m as any)?.message ?? m;
 			if (msg?.role === "assistant" && msg?.usage) {
@@ -839,31 +781,22 @@ export default function (pi: ExtensionAPI) {
 				stats.totalUncachedInput += u.input ?? 0;
 			}
 		}
+		
+		if (!repairToggle.isEnabled()) {
+			pendingGuidance.length = 0;
+			return undefined;
+		}
 
-		// If no guidance queued, return undefined (no-op, no array copy).
-		if (pendingGuidance.length === 0) return;
-
-		// Shallow copy — push only, never mutate elements. See invariant above.
+		if (pendingGuidance.length === 0) return undefined;
 		const messages = [...event.messages];
-		messages.push({
-			role: "user" as const,
-			content: [{ type: "text" as const, text: pendingGuidance.join("\n\n") }],
-		});
+		messages.push({ role: "user" as const, content: [{ type: "text" as const, text: pendingGuidance.join("\n\n") }] });
 		pendingGuidance.length = 0;
-
 		return { messages };
 	});
-
-	// ─── Register commands from handler module ────────────────────────
-	registerCommands(pi, {
-		stats,
-		failureTracker,
-		emptySearchTracker,
-		repairToggle,
-		contentHashCache,
-		eventSeq: { get value() { return eventSeq; }, set value(v) { eventSeq = v; } },
-		lastEditPerFile,
-		injectedGuidance,
-		setRepairStatus,
-	} as any);
+registerCommands(pi, {
+	stats, failureTracker, emptySearchTracker, repairToggle, contentHashCache,
+	eventSeq: { get value() { return eventSeq; }, set value(v) { eventSeq = v; } },
+	lastEditPerFile, injectedGuidance, setRepairStatus,
+} as any);
 }
+

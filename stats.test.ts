@@ -353,8 +353,6 @@ describe("formatCacheInfo", () => {
     expect(output).toContain("Cache reads:");
     expect(output).toContain("Cache writes:");
     expect(output).toContain("Uncached:");
-    expect(output).toContain("Session cost so far:");
-    expect(output).toContain("vs no cache:");
   });
 
   it("calculates correct hit rate", () => {
@@ -375,8 +373,7 @@ describe("formatCacheInfo", () => {
     const output = formatCacheInfo(stats);
 
     expect(output).toContain("Total input:    0");
-    expect(output).toContain("Session cost so far: $0.00");
-    expect(output).toContain("saving $0.00");
+    expect(output).toContain("Cache reads:    0 (0.0% hit rate)");
   });
 
   it("contains the 4-rule pattern description", () => {
