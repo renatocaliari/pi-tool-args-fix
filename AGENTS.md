@@ -37,6 +37,14 @@
 
 ---
 
+## Releases
+
+- **Stay at 0.x.x until user explicitly says stable.** No 1.x.x tag or release without user confirmation.
+- First 1.0.0 only when user says "stable" or "release 1.0".
+- Once at 1.x.x, semver rules apply normally (fix → patch, feat → minor, breaking → major).
+- Use `-alpha` suffix. Drop suffix only for stable releases.
+- Create annotated tags; changelog per [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 ## Don'ts
 
 - **Never modify `tool_result.content`** outside the 4-rule pattern — breaks LLM prefix cache. Modifications are allowed if they are static-cutoff, one-shot, byte-deterministic, and stable-position. The write-directory-fallback (Phase 6) follows this pattern.
