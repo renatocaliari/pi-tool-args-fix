@@ -276,11 +276,12 @@ export default function (pi: ExtensionAPI) {
 		const display = repairToggle.getStatusDisplay();
 		const isOn = repairToggle.isEnabled();
 		try { ctx.ui.setStatus("repair-layer", display); } catch { /* no-op */ }
-		// Title: 🔧 before 'repair: on' only when ON. When OFF, no 🔧.
-		// The title REPLACES whatever pi had before (no getTitle API).
-		// Keeping it short: '🔧 repair: on | pi' vs 'repair: off | pi'.
+		// Title: 🔧 prefix only when ON, status at end so user can scan
+		// without reading full title. Format: '🔧 pi | repair: on' vs
+		// 'pi | repair: off'. The 🔧 acts as visual beacon for ON state.
 		try {
-			const title = isOn ? `🔧 repair: on | pi` : `repair: off | pi`;
+			const status = isOn ? "repair: on" : "repair: off";
+			const title = isOn ? `🔧 pi | ${status}` : `pi | ${status}`;
 			ctx.ui.setTitle(title);
 		} catch { /* no-op */ }
 	}
