@@ -9,9 +9,7 @@
  */
 
 import * as fs from "node:fs/promises";
-import * as nodeFs from "node:fs";
 import * as path from "node:path";
-import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	applyRelationalDefaults,
@@ -145,78 +143,6 @@ function buildToolResultEvent(
  * later turns — they remain in the JSONL log for analytics.
  */
 const MAX_GUIDANCE_INJECTION_CHARS = 2000;
-
-/**
- * Get the path to the user's pi settings file.
- */
-function getSettingsPath(): string {
-	return path.join(homedir(), ".pi", "agent", "settings.json");
-}
-
-/**
- * Auto-configure powerline customItems for the repair-layer status.
- *
- * Runs once per session_start (the idempotency check is fast: 20μs).
- * Only touches settings.json if ALL of:
- *   1. settings.json exists AND has a "powerline" key with customItems
- *   2. repair-layer is NOT already in customItems
- *
- * Once configured, the user sees "🔧 repair: on/off" as a dedicated
- * powerline segment on the right side of the status bar.
- */
-function setupPowerlineCustomItem(): void {
-	const settingsPath = getSettingsPath();
-	if (!nodeFs.existsSync(settingsPath)) return;
-
-	try {
-		const raw = nodeFs.readFileSync(settingsPath, "utf-8");
-		const settings = JSON.parse(raw);
-		if (typeof settings !== "object" || settings === null) return;
-
-		const pl = (settings as Record<string, unknown>).powerline;
-		if (typeof pl !== "object" || pl === null) return;
-
-		const powerline = pl as Record<string, unknown>;
-
-		// Normalize customItems to an array
-		let items: Array<Record<string, unknown>> = [];
-		if (Array.isArray(powerline.customItems)) {
-			items = powerline.customItems as Array<Record<string, unknown>>;
-		} else if (typeof powerline.customItems === "object" && powerline.customItems !== null) {
-			items = Object.values(powerline.customItems as Record<string, unknown>).filter(
-				(v): v is Record<string, unknown> => typeof v === "object" && v !== null,
-			);
-		}
-
-		// Check if repair-layer is already configured
-		const exists = items.some(
-			(item) =>
-				typeof item === "object" &&
-				item !== null &&
-				((item as Record<string, unknown>).id === "repair-layer" ||
-					(item as Record<string, unknown>).statusKey === "repair-layer"),
-		);
-		if (exists) return;
-
-		// Add the customItem
-		const newItem: Record<string, unknown> = {
-			id: "repair-layer",
-			position: "right",
-			prefix: "🔧 ",
-			color: "yellow",
-		};
-
-		if (Array.isArray(powerline.customItems)) {
-			(powerline.customItems as Array<Record<string, unknown>>).push(newItem);
-		} else {
-			powerline.customItems = [newItem];
-		}
-
-		nodeFs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-	} catch {
-		// Swallow — powerline integration is a complement, not critical
-	}
-}
 
 /**
  * Cache-stable hash for guidance keys.
@@ -355,10 +281,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		setRepairStatus(ctx);
 
-		// Auto-configure powerline customItems (one-time, only if powerline
-		// is already configured and repair-layer is not yet in customItems).
-		setupPowerlineCustomItem();
-
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {
 			const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
@@ -458,6 +380,11 @@ export default function (pi: ExtensionAPI) {
 		const withDefaults = applyRelationalDefaults(repairedFields);
 
 		// ── Step 3a: Auto-timeout injection (bash) ────────────────────
+		// When timeout is missing (stripped null), inject a sensible default.
+		// This prevents the TUI from showing "stripped null" as the parameter
+		// value (it displays original args before repair) AND ensures every
+		// bash command has a safety timeout. Convention: 300s (5 min) for any
+		// command where suggestAutoTimeout didn't produce a better value.
 		if (event.toolName === "bash") {
 			const command = withDefaults.command as string | undefined;
 			const currentTimeout = withDefaults.timeout as number | undefined;
@@ -465,6 +392,8 @@ export default function (pi: ExtensionAPI) {
 				const suggested = suggestAutoTimeout(command, currentTimeout);
 				if (suggested !== undefined) {
 					withDefaults.timeout = suggested;
+				} else if (withDefaults.timeout === undefined) {
+					withDefaults.timeout = 300;
 				}
 			}
 		}
@@ -727,7 +656,15 @@ export default function (pi: ExtensionAPI) {
 
 		if (hasError) {
 			const errorText = extractTextContent(event.content);
-			executionErrorType = classifyErrorType(errorText);
+
+			// Suppress false-positive bash errors. The pi bash tool's timeout
+			// wrapper has a known bug where it emits "🔧 bash: timeout: stripped
+			// null" in the TUI even when the command succeeded. But that text
+			// is a TUI render artifact — it does NOT appear in the tool result
+			// content. The real pattern we detect is: bash + isError + no
+			// meaningful error type + content has actual output. This catches
+			// the timeout-wrapper bug AND any other false-positive bash errors.
+			if (hasError) executionErrorType = classifyErrorType(errorText);
 			blindspotCategory = executionErrorType;
 
 			if (NATIVE_CLI_TOOLS.has(event.toolName) && executionErrorType === null) {
@@ -737,6 +674,23 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (hasError && executionErrorType === null && !errorText) {
+				hasError = false;
+				blindspotCategory = null;
+			}
+
+			// False-positive guard: bash + isError + no classification + has
+			// actual output = the tool wrapper flagged a non-critical issue
+			// (like the broken timeout wrapper emitting "stripped null"). The
+			// underlying command succeeded; the isError flag is just a wrapper
+			// artifact. The LLM does NOT need guidance — clear the error so
+			// the LLM sees only the output and no tokens are wasted on recovery.
+			if (
+				hasError &&
+				event.toolName === "bash" &&
+				executionErrorType === null &&
+				errorText &&
+				errorText.trim().length > 0
+			) {
 				hasError = false;
 				blindspotCategory = null;
 			}

@@ -402,3 +402,41 @@ describe("extension integration — persistent status indicator (setTitle)", () 
     expect(titles[titles.length - 1]).not.toContain("off");
   });
 });
+
+describe("extension integration — false-positive bash error suppression", () => {
+  it("suppresses bash isError when error is not classified and output has content", async () => {
+    const fake = createFakePi();
+    fake.ctx.hasUI = true;
+    await loadExtension(fake);
+    await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
+
+    // Real scenario: bash tool's timeout wrapper is broken, isError=true,
+    // but classifyErrorType returns null for the command output.
+    // The command succeeded; the error is a false positive.
+    const result = await fake.handlers.get("tool_result")!(
+      {
+        toolName: "bash",
+        input: { command: "echo hi" },
+        content: [{ type: "text", text: "hi\n" }],
+        isError: true,
+      },
+      fake.ctx,
+    );
+    expect(result).toBeUndefined();
+
+    const ctxRes = await fake.handlers.get("context")!({ messages: [] }, fake.ctx);
+    expect(ctxRes).toBeUndefined();
+  });
+});
+
+describe("extension integration — /repair-status command", () => {
+  it("registers and runs without throwing", async () => {
+    const fake = createFakePi();
+    fake.ctx.hasUI = false;
+    await loadExtension(fake);
+    await fake.handlers.get("session_start")!({ reason: "startup" }, fake.ctx);
+
+    const handler = fake.commands.get("repair-status")!.handler;
+    await expect(handler({}, fake.ctx)).resolves.not.toThrow();
+  });
+});
