@@ -37,6 +37,13 @@ export function showInfo(ctx: any, msg: string): void {
 /**
  * Summarize differences between original and repaired tool call arguments.
  * Returns an array of human-readable repair descriptions.
+ *
+ * Two passes:
+ * 1. Keys in `original` but not in `repaired` → "stripped" (key was removed,
+ *    typically because the value was null/null-like and the field is optional).
+ *    This includes null-strip on non-content fields, null-like string removal,
+ *    and stripped extra props.
+ * 2. Keys in `repaired` → existing logic (added / changed / unchanged).
  */
 export function summarizeRepairs(
   original: Record<string, unknown>,
@@ -45,13 +52,28 @@ export function summarizeRepairs(
 ): string[] {
   const details: string[] = [];
 
+  // Pass 1: keys removed by repair
+  for (const key of Object.keys(original)) {
+    if (key in repaired) continue;
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    const oldValue = original[key];
+    if (oldValue === null) {
+      details.push(`${fullKey}: stripped null`);
+    } else if (typeof oldValue === "string" && ["null", "none", "n/a", "nil"].includes(oldValue.trim().toLowerCase())) {
+      details.push(`${fullKey}: stripped null-like string "${oldValue.slice(0, 30)}"`);
+    } else {
+      details.push(`${fullKey}: stripped`);
+    }
+  }
+
+  // Pass 2: keys present in repaired
   for (const [key, newValue] of Object.entries(repaired)) {
     const oldValue = original[key];
     const fullKey = prefix ? `${prefix}.${key}` : key;
 
-    // Key was stripped (null removal)
+    // Key was added during repair (e.g., auto-injected timeout)
     if (!(key in original)) {
-      details.push(`${fullKey}: stripped null`);
+      details.push(`${fullKey}: added`);
       continue;
     }
 
@@ -67,7 +89,20 @@ export function summarizeRepairs(
         );
         details.push(...nested);
       } else if (typeof oldValue === "string" && Array.isArray(newValue)) {
-        details.push(`${fullKey}: parsed JSON string → array`);
+        // Only label as "parsed JSON" when the source string actually looked like JSON.
+        // Without this check, "single.txt" → ["single.txt"] would get the wrong label.
+        // Convention: a string is JSON-like if it trims to start with `[` (or `{` or `"`)
+        // and end with its matching close. KISS — bracket sniff, no real JSON.parse.
+        const trimmed = oldValue.trim();
+        const jsonLike =
+          (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith('"') && trimmed.endsWith('"'));
+        if (jsonLike) {
+          details.push(`${fullKey}: parsed JSON string → array`);
+        } else {
+          details.push(`${fullKey}: wrapped bare → array`);
+        }
       } else if (!Array.isArray(oldValue) && Array.isArray(newValue) && typeof oldValue !== "object") {
         details.push(`${fullKey}: wrapped bare → array`);
       } else if (typeof oldValue === "object" && oldValue !== null && Array.isArray(newValue)) {
