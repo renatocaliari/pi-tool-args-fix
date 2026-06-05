@@ -301,6 +301,10 @@ export default function (pi: ExtensionAPI) {
 		const isOff = !repairToggle.isEnabled();
 		const repairableTools = REPAIRABLE_TOOLS;
 
+		// Count every tool_call the handler receives — used as denominator
+		// in the wouldHaveRepaired impact line (X of Y tool calls had issues).
+		stats.totalToolCalls++;
+
 		if (!repairableTools.has(event.toolName)) return undefined;
 
 		const originalInput = event.input as Record<string, unknown>;
@@ -694,7 +698,7 @@ export default function (pi: ExtensionAPI) {
 							const rec = buildToolResultEvent(event, ctx, eventSeq + 1, err, true, "empty_search_loop", undefined, isOff);
 							recordEvent(rec);
 							eventSeq++;
-							if (!isOff) queueGuidance(emptyKey, buildEmptySearchGuidance(searchPattern, undefined, event.toolName), true);
+							if (!isOff) queueGuidance(emptyKey, buildEmptySearchGuidance(searchPattern, event.toolName), true);
 							return undefined;
 						}
 					} else {
@@ -713,7 +717,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (consecutiveCount >= 1 && err.executionErrorType !== "TOOL_NOT_FOUND") {
 				if (consecutiveCount >= 7 && !isOff) {
-					queueGuidance(`cb:${event.toolName}`, buildCircuitBreakMessage(event.toolName, undefined, undefined), true);
+					queueGuidance(`cb:${event.toolName}`, buildCircuitBreakMessage(event.toolName), true);
 				}
 				if (!isOff) {
 					queueGuidance(`cli:${event.toolName}`, getToolHelp(event.toolName), true);

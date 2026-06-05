@@ -55,7 +55,7 @@ export class RepairToggle {
   }
 }
 
-export type RepairType =
+type RepairType =
   | "parsed JSON"
   | "wrapped bare"
   | "wrapped object"
@@ -70,6 +70,7 @@ export type RepairType =
 export interface RepairStats {
   repairTypeStats: Map<RepairType, number>;
   totalRepairs: number;
+  totalToolCalls: number;
   sequentials: number;
   guidanceInjections: number;
   guidanceSuppressed: number;
@@ -100,6 +101,7 @@ export function createStats(): RepairStats {
   return {
     repairTypeStats: new Map<RepairType, number>(),
     totalRepairs: 0,
+    totalToolCalls: 0,
     sequentials: 0,
     guidanceInjections: 0,
     guidanceSuppressed: 0,
@@ -223,11 +225,12 @@ export function formatStats(stats: RepairStats): string {
 /**
  * Format the "would have repaired" section (G3 surface).
  *
- * Shows what repairs would have been applied if the toggle was ON.
- * Aggregated per-repair-type from OFF-branch events recorded this session.
+ * Shows what repairs would have been applied if the toggle was ON,
+ * plus the context: how many of the total tool calls had arg issues.
  *
- * Convention: if the count is zero, returns a one-liner saying so. Otherwise
- * returns a table matching `formatStats` style.
+ * Convention: if the count is zero, returns a one-liner saying so.
+ * Otherwise returns a table with a footer line that contextualizes
+ * the absolute total against the total tool calls this session.
  */
 export function formatWouldHaveRepaired(stats: RepairStats): string {
   if (stats.wouldHaveRepairedTotal === 0) {
@@ -255,9 +258,22 @@ export function formatWouldHaveRepaired(stats: RepairStats): string {
   const separator = "-".repeat(header.length);
   const totalLine = `${"Total".padEnd(maxTypeLen)}  ${String(stats.wouldHaveRepairedTotal).padStart(5)}`;
 
+  // Context footer: compare the absolute total to what actually happened.
+  // % is "share of tool calls that had arg issues" — the natural metric
+  // for "how much is OFF costing you".
+  const toolCallsAffected = stats.wouldHaveRepairedTotal; // 1:1 with skipped events, but using total for clarity
+  const totalCalls = stats.totalToolCalls;
+  const affectedPct = totalCalls > 0
+    ? Math.round((toolCallsAffected / totalCalls) * 100)
+    : 0;
+  const contextLine = totalCalls > 0
+    ? `\nImpact: ${toolCallsAffected} of ${totalCalls} tool calls (${affectedPct}%) had arg issues while OFF`
+    : "";
+
   return [
     "🔍 Would have repaired (if repair was ON):",
     "",
     ...[header, separator, ...lines, separator, totalLine],
+    contextLine,
   ].join("\n");
 }

@@ -9,7 +9,7 @@
 const CONSECUTIVE_LIMIT = 3;
 const CIRCUIT_BREAK_LIMIT = 7;
 
-export type LoopSeverity = "none" | "minor" | "major" | "critical";
+type LoopSeverity = "none" | "minor" | "major" | "critical";
 
 /**
  * Track consecutive failures per tool.

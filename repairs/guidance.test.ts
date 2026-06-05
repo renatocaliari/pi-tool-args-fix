@@ -30,57 +30,35 @@ describe("buildPathValidationGuidance", () => {
 });
 
 describe("buildStalenessGuidance", () => {
-  it("is deterministic regardless of turn number (cache-safe)", () => {
-    // Same output for turn 1, 42, 1000 — required for prefix cache hits
-    expect(buildStalenessGuidance(1)).toBe(buildStalenessGuidance(42));
-    expect(buildStalenessGuidance(42)).toBe(buildStalenessGuidance(1000));
-  });
-  it("does NOT include the turn number in output", () => {
-    expect(buildStalenessGuidance(42)).not.toContain("turn 42");
-    expect(buildStalenessGuidance(42)).not.toContain("(turn");
-  });
-  it("works without arguments (backward compatible)", () => {
-    const out = buildStalenessGuidance();
-    expect(out).toContain("File content has changed");
+  it("is deterministic — returns the same string on every call (cache-safe)", () => {
+    expect(buildStalenessGuidance()).toBe(buildStalenessGuidance());
+    expect(buildStalenessGuidance()).toContain("File content has changed");
   });
   it("mentions exact current text requirement", () => {
-    expect(buildStalenessGuidance(5)).toContain("exact current text as oldText");
+    expect(buildStalenessGuidance()).toContain("exact current text as oldText");
   });
 });
 
 describe("buildCircuitBreakMessage", () => {
   it("is deterministic per tool (cache-safe)", () => {
-    // Same output for 7, 10, 100 failures — required for prefix cache hits
-    expect(buildCircuitBreakMessage("edit", 7, "x")).toBe(
-      buildCircuitBreakMessage("edit", 10, "y"),
-    );
-    expect(buildCircuitBreakMessage("edit", 10, "x")).toBe(
-      buildCircuitBreakMessage("edit", 100, "z"),
-    );
+    // Same tool → same string, regardless of how many failures or what error
+    expect(buildCircuitBreakMessage("edit")).toBe(buildCircuitBreakMessage("edit"));
   });
-  it("does NOT include consecutive count or error details in output", () => {
-    const msg = buildCircuitBreakMessage("edit", 10, "oldText not found");
-    expect(msg).not.toContain("10 consecutive");
-    expect(msg).not.toContain("Error details");
-    expect(msg).not.toContain("oldText not found");
-  });
-  it("works without optional arguments (backward compatible)", () => {
+  it("works with just a tool name", () => {
     const msg = buildCircuitBreakMessage("bash");
     expect(msg).toContain("bash");
     expect(msg).toContain("CIRCUIT BREAKER");
   });
   it("includes tool name", () => {
-    expect(buildCircuitBreakMessage("edit", 7, "failed")).toContain("edit");
-    expect(buildCircuitBreakMessage("edit", 7, "failed")).toContain("CIRCUIT BREAKER");
+    expect(buildCircuitBreakMessage("edit")).toContain("edit");
+    expect(buildCircuitBreakMessage("edit")).toContain("CIRCUIT BREAKER");
   });
   it("suggests alternative strategies", () => {
-    const msg = buildCircuitBreakMessage("edit", 7, "failed");
+    const msg = buildCircuitBreakMessage("edit");
     expect(msg).toContain("write tool");
   });
   it("differs by tool name (categorical input)", () => {
-    expect(buildCircuitBreakMessage("edit", 7, "x")).not.toBe(
-      buildCircuitBreakMessage("bash", 7, "x"),
-    );
+    expect(buildCircuitBreakMessage("edit")).not.toBe(buildCircuitBreakMessage("bash"));
   });
 });
 
@@ -109,38 +87,30 @@ describe("buildEditLoopGuidance", () => {
 
 describe("buildEmptySearchGuidance", () => {
   it("is deterministic per pattern+tool (cache-safe)", () => {
-    // Same output for 3, 5, 10 consecutive empties — required for prefix cache hits
-    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toBe(
-      buildEmptySearchGuidance("NavUnifiedDropdown", 5, "find"),
-    );
-    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toBe(
-      buildEmptySearchGuidance("NavUnifiedDropdown", 10, "find"),
+    // Same pattern+tool → same string, regardless of how many empties
+    expect(buildEmptySearchGuidance("NavUnifiedDropdown", "find")).toBe(
+      buildEmptySearchGuidance("NavUnifiedDropdown", "find"),
     );
   });
-  it("does NOT include consecutive count in output", () => {
-    const msg = buildEmptySearchGuidance("session", 5, "grep");
-    expect(msg).not.toContain("5 times");
-    expect(msg).not.toContain("a different tool");
-  });
-  it("works without optional count (backward compatible)", () => {
-    const msg = buildEmptySearchGuidance("NavUnifiedDropdown", undefined, "find");
-    expect(msg).toContain("find");
-    expect(msg).toContain("NavUnifiedDropdown");
+  it("includes pattern and tool name", () => {
+    const msg = buildEmptySearchGuidance("session", "grep");
+    expect(msg).toContain("session");
+    expect(msg).toContain("grep");
   });
   it("includes tool name and pattern", () => {
-    const msg = buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find");
+    const msg = buildEmptySearchGuidance("NavUnifiedDropdown", "find");
     expect(msg).toContain("find");
     expect(msg).toContain("NavUnifiedDropdown");
   });
   it("suggests listing directory for persistent failures", () => {
-    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 5, "grep")).toContain("Change strategy");
+    expect(buildEmptySearchGuidance("NavUnifiedDropdown", "grep")).toContain("Change strategy");
   });
   it("mentions common naming conventions", () => {
-    expect(buildEmptySearchGuidance("NavUnifiedDropdown", 3, "find")).toContain("snake_case");
+    expect(buildEmptySearchGuidance("NavUnifiedDropdown", "find")).toContain("snake_case");
   });
   it("truncates long pattern to 80 chars", () => {
     const longPattern = "a".repeat(200);
-    const msg = buildEmptySearchGuidance(longPattern, 3, "find");
+    const msg = buildEmptySearchGuidance(longPattern, "find");
     expect(msg).toContain("a".repeat(80));
   });
 });

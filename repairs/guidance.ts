@@ -35,11 +35,9 @@ export function buildPathValidationGuidance(
  * Build staleness guidance for edit tool when content hash has changed.
  *
  * Cache-friendly: output is a fixed string with no dynamic state.
- * The `lastReadTurn` parameter is accepted for backward compatibility
- * (some callers still pass it) but is intentionally NOT included in
- * the output. Same error → same string → DeepSeek prefix cache hit.
+ * Same error → same string → DeepSeek prefix cache hit.
  */
-export function buildStalenessGuidance(_lastReadTurn?: number): string {
+export function buildStalenessGuidance(): string {
   return [
     `⚠️ File content has changed since it was last read.`,
     "The edit may overwrite newer content or the oldText no longer matches.",
@@ -53,16 +51,10 @@ export function buildStalenessGuidance(_lastReadTurn?: number): string {
 /**
  * Build circuit break message for the LLM (7+ consecutive failures).
  *
- * Cache-friendly: output is a fixed string per tool. The `consecutiveCount`
- * and `errorDetails` parameters are accepted for backward compatibility
- * but are NOT included in the output. Identical text is returned for
- * 7+, 8+, 9+ failures — only the tool name varies.
+ * Cache-friendly: output is a fixed string per tool. Identical text is
+ * returned for 7+, 8+, 9+ failures — only the tool name varies.
  */
-export function buildCircuitBreakMessage(
-  toolName: string,
-  _consecutiveCount?: number,
-  _errorDetails?: string,
-): string {
+export function buildCircuitBreakMessage(toolName: string): string {
   return [
     `🔴 CIRCUIT BREAKER: Tool "${toolName}" has failed multiple consecutive times.`,
     "The current approach is not working and further retries will not help.",
@@ -326,18 +318,12 @@ export function buildEditNonUniqueGuidance(
  * Build guidance for consecutive empty search results (find/grep/ls returning nothing).
  * Injected when the model searches for the same concept 3+ times with no results.
  *
- * Cache-friendly: output is a function of (pattern, toolName) only. The
- * `consecutiveCount` parameter is accepted for backward compatibility but
- * is NOT included in the output. Same pattern + same tool → same string.
- * This is intentional: once the threshold is hit, the guidance should
- * be stable across turns (the model gets the same "change strategy"
- * reminder every time the loop continues).
+ * Cache-friendly: output is a function of (pattern, toolName) only. Same
+ * pattern + same tool → same string. This is intentional: once the
+ * threshold is hit, the guidance should be stable across turns (the model
+ * gets the same "change strategy" reminder every time the loop continues).
  */
-export function buildEmptySearchGuidance(
-  pattern: string,
-  _consecutiveCount?: number,
-  toolName?: string,
-): string {
+export function buildEmptySearchGuidance(pattern: string, toolName?: string): string {
   const lines = [
     `⚠️  ${toolName ?? "search"} "${pattern.slice(0, 80)}" returned no results.`,
     `The search pattern is not matching any files.`,

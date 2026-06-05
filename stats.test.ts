@@ -430,6 +430,24 @@ describe("formatCacheInfo", () => {
       const rareIdx = output.indexOf("rare type");
       expect(commonIdx).toBeLessThan(rareIdx);
     });
+
+    it("footer shows impact: X of Y tool calls (Z%) when totalToolCalls > 0", () => {
+      const stats = createStats();
+      stats.totalToolCalls = 23;
+      stats.wouldHaveRepairedTotal = 12;
+      stats.wouldHaveRepairedByType.set("stripped null", 12);
+      const output = formatWouldHaveRepaired(stats);
+      // 12 of 23 = 52%
+      expect(output).toContain("Impact: 12 of 23 tool calls (52%) had arg issues while OFF");
+    });
+
+    it("footer omitted when totalToolCalls is 0 (no denominator)", () => {
+      const stats = createStats();
+      stats.wouldHaveRepairedTotal = 5;
+      stats.wouldHaveRepairedByType.set("stripped null", 5);
+      const output = formatWouldHaveRepaired(stats);
+      expect(output).not.toContain("Impact:");
+    });
   });
 
   describe("createStats — wouldHaveRepaired fields initialized", () => {
@@ -438,6 +456,11 @@ describe("formatCacheInfo", () => {
       expect(stats.wouldHaveRepairedByType).toBeInstanceOf(Map);
       expect(stats.wouldHaveRepairedByType.size).toBe(0);
       expect(stats.wouldHaveRepairedTotal).toBe(0);
+    });
+
+    it("initializes totalToolCalls to 0", () => {
+      const stats = createStats();
+      expect(stats.totalToolCalls).toBe(0);
     });
   });
 
