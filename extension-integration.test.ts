@@ -380,7 +380,7 @@ describe("extension integration — guidance join cap", () => {
 describe("extension integration — persistent status indicator (setTitle)", () => {
   it("setTitle is called with repair status on session_start and toggle", async () => {
     const fake = createFakePi();
-    fake.ctx.hasUI = true; // setRepairStatus bails early without UI
+    fake.ctx.hasUI = true;
     const titles: string[] = [];
     fake.ctx.ui.setTitle = (t: string) => { titles.push(t); };
 

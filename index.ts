@@ -272,7 +272,6 @@ export default function (pi: ExtensionAPI) {
 	// normalizeCompactExtensionStatus picks it up. The powerline handles
 	// coloring via its own theme system using customItems config.
 	function setRepairStatus(ctx: any): void {
-		if (!ctx.hasUI) return;
 		const display = repairToggle.getStatusDisplay();
 		const isOn = repairToggle.isEnabled();
 		try { ctx.ui.setStatus("repair-layer", display); } catch { /* no-op */ }
