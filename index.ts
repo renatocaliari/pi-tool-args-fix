@@ -276,19 +276,19 @@ export default function (pi: ExtensionAPI) {
 		const isOn = repairToggle.isEnabled();
 		try { ctx.ui.setStatus("repair-layer", display); } catch { /* no-op */ }
 		// Title: 🔧 prefix only when ON, status at end so user can scan
-		// without reading full title. Format: '🔧 pi | repair: on' vs
-		// 'pi | repair: off'. The 🔧 acts as visual beacon for ON state.
+		// without reading full title. Format: '🔧 π | repair: on' vs
+		// 'π | repair: off'. The 🔧 acts as visual beacon for ON state.
 		try {
 			const status = isOn ? "repair: on" : "repair: off";
-			const title = isOn ? `🔧 pi | ${status}` : `pi | ${status}`;
+			const title = isOn ? `🔧 π | ${status}` : `π | ${status}`;
 			ctx.ui.setTitle(title);
 		} catch { /* no-op */ }
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Attempt early; may not stick if pi hasn't finished TUI init yet.
+		// context event below guarantees the title is set for the first LLM turn.
 		setRepairStatus(ctx);
-		// Retry after TUI finishes init — setTitle is a no-op too early.
-		setTimeout(() => setRepairStatus(ctx), 1000);
 
 		const allEvents = readAllEvents();
 		if (allEvents.length > 0) {
