@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-539_passing-2ea043?style=for-the-badge)
+![Tests](https://img.shields.io/badge/Tests-559_passing-2ea043?style=for-the-badge)
 
 **Fix LLM tool-calling bugs transparently — no model changes, no retraining, no cache penalty.**
 
@@ -324,7 +324,8 @@ extensions are deterministic, so the combined output is cache-stable.
 
 ### Cache Metrics
 
-Track cache hit rate with `/repair-cache-info`:
+Track prefix cache hit rate, guidance injection count, and repair-log
+location with `/repair-cache-info`. Example output for a session with cache data:
 
 ```
 > /repair-cache-info
@@ -332,19 +333,41 @@ Track cache hit rate with `/repair-cache-info`:
 📊 Cache Impact
 ─────────────────
 
-This extension's cache-safety contract:
-  Guidance items queued: 0  (unique, post-execution, side-channel only)
+Tokenizer (LLM prefix cache):
+  Total sent to API:   75.4K  (100%)
+  Served from cache:   45.1K  (59.8%)
+  Computed from zero:  30.3K  (40.2%)
+  Written to cache:    12.3K
 
-LLM cache hit rate (provider-reported):
-  Total input:    75.4K
-  Cache reads:    45.1K (60.0% hit rate)
-  Cache writes:   12.3K (16.3% of total)
-  Uncached:       18.0K
+Guidance (context event — injected before LLM call, not persisted):
+  Items: 7
+  Suppressed by 2000-char cap: 0
 
-Cache contract: this extension follows the 4-rule pattern
-(static cutoff + one-shot + byte-deterministic + stable position).
-See `docs/cache-safety.md` for the full contract.
+Repair log (all events with full details):
+  /Users/.../cwd/.pi/repair-log/<sessionId>.jsonl
 ```
+
+When the provider does not report cache data (`cacheRead: 0`):
+
+```
+Tokenizer (LLM prefix cache):
+  Total sent to API:   35.6K  (100%)
+  Served from cache:       0   (0.0%)
+  Computed from zero:  35.6K  (100.0%)
+  (0.0% hit rate — provider did not report cache data)
+```
+
+**Reading the metrics:** `Total sent to API` is the full input prompt
+(`input` token count from the LLM provider). `Served from cache` is the
+prefix-cache hit portion. `Computed from zero` is the rest (uncached
+portion that the provider actually computed). `Written to cache` is
+priming overhead, only present when the provider reports it.
+
+**The metrics are real**, sourced from `usage.cacheRead` /
+`usage.cacheWrite` / `usage.input` that pi normalizes from the
+provider's response. Not all providers report cache stats — if all
+three are zero, the extension notes that and explains why the hit
+rate shows 0%.
 
 ---
 
@@ -359,7 +382,7 @@ See `docs/cache-safety.md` for the full contract.
 | `/repair-toggle` | Toggle repair layer on/off |
 | `/repair-stats-session` | In-memory stats for the current session |
 | `/repair-stats-global` | Aggregated stats across all logged sessions |
-| `/repair-cache-info` | Cache impact metrics (guidance injection count) |
+| `/repair-cache-info` | Cache impact metrics (prefix cache hit rate, guidance items, repair-log path) |
 | `/repair-gaps` | Error patterns without repair coverage |
 | `/repair-suggest` | LLM-powered blindspot analysis and new repair suggestions |
 
@@ -566,7 +589,7 @@ pi-tool-repair-layer/
 ├── testing-strategy.md       # Test coverage and mutation strategy
 ├── pi-coding-agent.d.ts      # Type declarations for pi runtime module
 ├── tsconfig.json             # Strict TypeScript config
-├── *.test.ts                 # 539 tests across 20 files
+├── *.test.ts                 # 559 tests across 21 files (vitest)
 ├── scripts/hooks/pre-commit  # Pre-commit hook (vitest, opt-in via npm run setup:hooks)
 └── README.md                 # You are here
 ```
