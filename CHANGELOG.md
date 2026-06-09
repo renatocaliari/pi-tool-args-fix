@@ -2,6 +2,14 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [0.15.12-alpha] - 2026-06-09
+
+### Changed
+
+- **Pipe timeout reduced 600s → 60s** — pipe-only commands (grep/cat/sort/head/wc) now get
+  60s instead of 600s. Pipe + long-running commands (e.g. `test | tee`) fall through to
+  normal timeout logic (300s for build/test, 120s for generate/deploy).
+
 ## [0.15.11-alpha] - 2026-06-05
 
 ### Fixed
