@@ -60,12 +60,21 @@ describe("suggestAutoTimeout", () => {
     expect(suggestAutoTimeout("templ generate", undefined)).toBe(120);
     expect(suggestAutoTimeout("npm run deploy", undefined)).toBe(120);
   });
-  it("suggests 600s for piped commands with known output tools", () => {
-    expect(suggestAutoTimeout("cat huge-log.txt | head", undefined)).toBe(600);
-    expect(suggestAutoTimeout("./benchmark.sh | tee log.txt", undefined)).toBe(600);
+  it("suggests 60s for pipe-only commands (not long-running)", () => {
+    expect(suggestAutoTimeout("cat huge-log.txt | head", undefined)).toBe(60);
+    expect(suggestAutoTimeout("grep -r foo src/ | head -20", undefined)).toBe(60);
+    expect(suggestAutoTimeout("find / -name '*.config' | head", undefined)).toBe(60);
   });
-  it("still suggests 600s for piped commands even when some timeout already set", () => {
-    expect(suggestAutoTimeout("find / -name '*.config' | head", 30)).toBe(600);
+  it("suggests 60s for pipe-only commands with too-short timeout", () => {
+    expect(suggestAutoTimeout("find / -name '*.config' | head", 30)).toBe(60);
+    expect(suggestAutoTimeout("cat data.txt | sort", 10)).toBe(60);
+  });
+  it("falls through to normal timeout for long-running + pipe (test | tee)", () => {
+    expect(suggestAutoTimeout("go test ./... | tee results.txt", undefined)).toBe(300);
+    expect(suggestAutoTimeout("./benchmark.sh | tee log.txt", undefined)).toBe(120);
+  });
+  it("respects existing adequate timeout on long-running + pipe", () => {
+    expect(suggestAutoTimeout("go test ./... | tee results.txt", 300)).toBeUndefined();
   });
   it("does NOT inject pipe-timeout for commands without known pipe tools", () => {
     expect(suggestAutoTimeout("cmd1 | cmd2", undefined)).toBeUndefined();

@@ -74,7 +74,7 @@ export function translateSchemaValidationError(errorText: string): string | null
 export const BLINDSPOT_SUGGESTIONS: Record<string, string> = {
   EISDIR: "✅ Already handled: directory-listing fallback for read/read_file. Consider expanding to write tool and bash cd cases.",
   ENOENT: "Pre-execution path validation: extract all paths from args, check existence before tool runs, try variations (relative path, extension variants, fuzzy match), and return tool error with alternatives.",
-  timeout: "Auto-timeout injection: detect long-running command patterns (build, test, lint, piped commands) and inject timeout_seconds=300+ when missing or too short.",
+  timeout: "Auto-timeout injection: detect long-running command patterns (build/test → 300s, generate/deploy → 120s) and pipe-only commands (grep/cat/sort → 60s) and inject timeout_seconds when missing or too short.",
   "400": "Inspect request schema: model may be sending extra/malformed parameters. Add schema validation upstream.",
   SCHEMA_VALIDATION: "The model sent arguments violating the tool's JSON schema. Consider adding field-level truncation for maxLength constraints, or enum validation.",
   CONSECUTIVE_LOOP: "Circuit breaker: after 3+ consecutive identical failures, inject tool-specific contextual guidance. After 7+, return permanent error forcing strategy change.",

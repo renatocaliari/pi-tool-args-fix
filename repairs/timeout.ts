@@ -22,7 +22,8 @@ export function isLongRunningCommand(command: string): boolean {
  * Rules:
  * - If no timeout provided and command is long-running → suggest 300 (5 min)
  * - If timeout < 30 and command is long-running → suggest 120 (2 min)
- * - If command has pipes (known bug with timeout enforcement) → suggest 600 (10 min)
+ * - Pipe + not long-running → suggest 60 (1 min)
+ * - Pipe + long-running → fall through to normal timeout logic
  * - Otherwise → keep as-is
  */
 export function suggestAutoTimeout(
@@ -36,10 +37,13 @@ export function suggestAutoTimeout(
 
   // Pipe commands: known timeout enforcement issue
   if (hasPipes) {
-    if (currentTimeout === undefined || currentTimeout < 600) {
-      return 600;
+    if (isLong) {
+      // Long-running + pipe: fall through to normal timeout logic
+    } else if (currentTimeout === undefined || currentTimeout < 60) {
+      return 60;
+    } else {
+      return undefined;
     }
-    return undefined;
   }
 
   // Long-running command with no timeout
