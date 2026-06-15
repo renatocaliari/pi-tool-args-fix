@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { unwrapMarkdownLink, cleanPathValue, resolvePath, isUrlOrFlag, extractPathsFromArgs } from "../repairs/path-utils.js";
+import { unwrapMarkdownLink, cleanPathValue, resolvePath, isUrlOrFlag, extractBashPaths, extractPathsFromArgs } from "../repairs/path-utils.js";
 import { isContentField } from "../repairs/classification.js";
 
 describe("unwrapMarkdownLink", () => {
@@ -207,5 +207,84 @@ describe("attribute-based path validation logic", () => {
     const paths = extractPathsFromArgs(args);
     const hasContent = Object.keys(args).some(k => isContentField(k));
     expect(hasContent).toBe(true);
+  });
+});
+
+describe("extractBashPaths", () => {
+  it("extracts cd targets when target contains path separator", () => {
+    expect(extractBashPaths("cd src/components")).toContain("src/components");
+    expect(extractBashPaths("cd ./subdir")).toContain("./subdir");
+  });
+
+  it("extracts paths starting with ./", () => {
+    expect(extractBashPaths("./script.sh --help")).toContain("./script.sh");
+    expect(extractBashPaths("go run ./cmd/web/")).toContain("./cmd/web/");
+  });
+
+  it("extracts paths with file extensions", () => {
+    expect(extractBashPaths("cat file.ts")).toContain("file.ts");
+    expect(extractBashPaths("cat config.json")).toContain("config.json");
+    expect(extractBashPaths("go run main.go")).toContain("main.go");
+    expect(extractBashPaths("source .env")).toContain(".env");
+  });
+
+  it("does NOT extract flags", () => {
+    expect(extractBashPaths("ls -la")).toEqual([]);
+    expect(extractBashPaths("cat --help")).toEqual([]);
+  });
+
+  it("does NOT extract env vars", () => {
+    expect(extractBashPaths("echo $HOME")).toEqual([]);
+    expect(extractBashPaths("cd $GOPATH/src")).toEqual([]);
+  });
+
+  it("does NOT extract URLs", () => {
+    expect(extractBashPaths("curl https://example.com")).toEqual([]);
+  });
+
+  it("extracts multiple paths from complex commands", () => {
+    const result = extractBashPaths("cat src/main.ts src/utils.ts && go build ./cmd/");
+    expect(result).toContain("src/main.ts");
+    expect(result).toContain("src/utils.ts");
+    expect(result).toContain("./cmd/");
+  });
+
+  it("deduplicates paths", () => {
+    const result = extractBashPaths("cat file.ts file.ts");
+    expect(result.filter(p => p === "file.ts")).toHaveLength(1);
+  });
+
+  it("handles empty command", () => {
+    expect(extractBashPaths("")).toEqual([]);
+  });
+
+  it("handles command with only flags", () => {
+    expect(extractBashPaths("ls -la -R --all")).toEqual([]);
+  });
+
+  it("handles piped commands", () => {
+    const result = extractBashPaths("cat data.json | jq .name");
+    expect(result).toContain("data.json");
+  });
+
+  it("handles commands with single-quoted paths (already handled by extractPathsFromArgs)", () => {
+    // extractBashPaths doesn't handle quotes — that's extractPathsFromArgs' job
+    expect(extractBashPaths("cat '/path/with spaces.ts'")).toContain("'/path/with");
+  });
+
+  it("extracts paths with ./ prefix", () => {
+    expect(extractBashPaths("./run.sh")).toContain("./run.sh");
+    expect(extractBashPaths("../build/output.bin")).toContain("../build/output.bin");
+  });
+
+  it("handles paths with hyphens in name (not flags)", () => {
+    const result = extractBashPaths("cat my-config.dev.json");
+    expect(result).toContain("my-config.dev.json");
+  });
+
+  it("rejects tokens starting with minus that look like flags not paths", () => {
+    const result = extractBashPaths("some-tool --output-dir ./build");
+    expect(result).not.toContain("--output-dir");
+    expect(result).toContain("./build");
   });
 });

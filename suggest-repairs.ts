@@ -29,7 +29,15 @@ export { composeIssueContent, buildIssueUrl } from "./suggest-repairs/issue.js";
 export { formatSuggestions } from "./suggest-repairs/formatting.js";
 export { parseSuggestions, parseRecommendation, parseIssueContent, parseCodeGenResult } from "./suggest-repairs/parsing.js";
 export { callLLM, extractJSON } from "./suggest-repairs/llm-client.js";
-export { gatherAnalysisData, buildUserPrompt, SYSTEM_PROMPT } from "./suggest-repairs/analysis.js";
+export {
+  gatherAnalysisData,
+  buildUserPrompt,
+  SYSTEM_PROMPT,
+  DISPATCH_CAPABILITIES,
+  HANDLER_CAPABILITIES,
+  GUIDANCE_CAPABILITIES,
+  DEFERRED_FEATURES,
+} from "./suggest-repairs/analysis.js";
 
 import { gatherAnalysisData, buildUserPrompt, SYSTEM_PROMPT } from "./suggest-repairs/analysis.js";
 import { callLLM } from "./suggest-repairs/llm-client.js";

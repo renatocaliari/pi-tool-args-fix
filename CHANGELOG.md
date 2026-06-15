@@ -2,6 +2,43 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [0.15.13-alpha] - 2026-06-15
+
+### Added
+
+- **ContentHashCache update after edit/write** — Phase 5 now updates cache
+  after successful edit/edit_file/write, preventing false-positive staleness
+  blocks on sequential edits to the same file.
+- **Bash path validation with guidance** — Step 3b now queues guidance (not
+  block) when bash commands reference non-existent paths. New
+  `extractBashPaths` function catches unquoted paths (`cat file.ts`,
+  `./script.sh`, `cd src/components`) that `extractPathsFromArgs` missed.
+- **Priority-based guidance cap** — context handler drops lowest-priority
+  items first (circuit breaker > staleness > tool help) instead of FIFO
+  when exceeding the 2000-char injection cap.
+- **`getGuidancePriority` extracted** to `repairs/guidance-priority.ts`
+  with full test coverage (15 tests, all 8 priority bands).
+- **Capability constants** in `suggest-repairs/analysis.ts` — handler-level,
+  dispatch, guidance recovery, and deferred features now exported as
+  arrays. Used by `buildUserPrompt` and verified against
+  `docs/repair-catalog.md` via drift tests.
+- **Catlog-drift tests** for all 4 capability constant arrays (dispatch,
+  handler, guidance, deferred).
+
+### Fixed
+
+- **`/repair-suggest` agora vê o sistema completo** — prompt agora inclui
+  13 handler-level protections, 6 error guidance functions, e 3 features
+  já deferidas. LLM não sugere mais coisas que já existem (staleness
+  check, timeout injection, etc.).
+- **Removed unused fnv1a function** (causing TS6133 warning).
+
+### Changed
+
+- **`docs/repair-catalog.md`** — Section 2 updated with write directory
+  fallback, ContentHashCache after edit/write, path validation (non-bash),
+  path guidance (bash), priority-based guidance cap.
+
 ## [0.15.12-alpha] - 2026-06-09
 
 ### Changed

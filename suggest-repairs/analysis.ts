@@ -42,7 +42,9 @@ export function gatherAnalysisData(
 export const SYSTEM_PROMPT = `You are an expert in LLM tool-call reliability engineering.
 You analyze telemetry data from a tool-call repair layer and suggest new repairs.
 
-The repair layer intercepts LLM tool calls and fixes common argument mistakes:
+The repair layer intercepts LLM tool calls in two layers:
+
+DISPATCH-LEVEL field repairs (repairs.ts):
 - Stripping null/undefined from optional fields
 - Parsing JSON strings into objects/arrays
 - Wrapping bare values as arrays where expected
@@ -51,8 +53,24 @@ The repair layer intercepts LLM tool calls and fixes common argument mistakes:
 - Coercing boolean/number strings to proper types
 - Stripping extra properties from array items
 
+HANDLER-LEVEL protections (index.ts):
+- Auto-timeout injection for bash commands (300s/120s/60s)
+- Pre-flight path validation (blocks non-bash on ENOENT, guides for bash)
+- Staleness check via ContentHashCache before edits
+- EISDIR directory fallback for read/read_file
+- Sequential edit overlap detection
+- Empty search loop detection (3+ empties = change strategy)
+- Circuit breaker (7+ consecutive failures = force strategy change)
+- Enhanced EDIT_MISMATCH guidance with file context
+- Write directory fallback
+- ContentHashCache update after edit/write
+- Priority-based guidance cap (circuit breaker > staleness > tool help)
+
 Your task: Analyze blindspots (errors without repair coverage), repair patterns,
 and raw event samples. Then suggest specific new repairs or improvements.
+
+The \"Current Repair Capabilities\" section in the user prompt has the FULL current
+feature set — read it carefully before suggesting anything that might already exist.
 
 IMPORTANT RULES:
 1. Only suggest repairs that are DETERMINISTIC — no ML, no fuzzy matching that could silently corrupt data.
@@ -93,6 +111,59 @@ Output ONLY valid JSON matching this schema, no other text:
 }
 
 Respond with valid JSON only.`;
+
+// ─── Capability Constants ──────────────────────────────────────────────
+// Single source of truth for what this extension does.
+// Used by buildUserPrompt and tested against docs/repair-catalog.md.
+// Update here first when adding new features, THEN update the catalog.
+
+/** Dispatch-level field repairs (repairs.ts). */
+export const DISPATCH_CAPABILITIES = [
+  "clean-path: unwrap markdown links, resolve ~/ paths",
+  "parse-json: parse stringified JSON arrays/objects",
+  "wrap-array: wrap bare strings/values as arrays",
+  "wrap-object-as-array: wrap objects as single-element arrays",
+  "split-string-to-array: split comma/space-separated strings",
+  "coerce-boolean: convert 'true'/'yes'/'1' to boolean",
+  "coerce-number: convert '42'/'3.14' to number",
+  "strip-extra-properties: remove extra fields from array items",
+  "applyRelationalDefaults: add missing offset/limit defaults",
+  "isNullLikeString: strip null/none/n/a strings",
+];
+
+/** Handler-level protections (index.ts). */
+export const HANDLER_CAPABILITIES = [
+  "Auto-timeout injection: injects 300s/120s/60s timeout for bash based on command pattern",
+  "Path validation pre-flight: checks file existence before non-bash tools, blocks with guidance on ENOENT",
+  "Path guidance for bash: queues guidance when bash command references non-existent paths (no block)",
+  "Staleness check (ContentHashCache): reads file before edit, blocks if content changed since last read",
+  "EISDIR directory fallback: read/read_file on a directory returns listing instead of error",
+  "Sequential edit overlap: detects consecutive edits on same region without intervening read",
+  "Empty search loop detection: find/grep/ls returning nothing 3x+ on same concept → injects strategy-change guidance",
+  "Circuit breaker: 7+ consecutive failures on same tool → injects force-strategy-change guidance",
+  "Enhanced EDIT_MISMATCH guidance: reads file, finds closest oldText match, provides context",
+  "Write directory fallback: write to path without extension → list directory contents instead",
+  "Edit loop guidance: 3+/5+ consecutive edit failures → tool-specific guidance for whitespace/indent issues",
+  "ContentHashCache update after edit/write: prevents false-positive staleness blocks on sequential edits",
+  "Priority-based guidance cap: circuit breaker > staleness > tool help when cap exceeded",
+];
+
+/** Error guidance & recovery functions. */
+export const GUIDANCE_CAPABILITIES = [
+  "getToolHelp(toolName): per-tool usage guidance for consecutive failures",
+  "getErrorGuidance(category): per-error-category guidance (TOOL_NOT_FOUND, SCHEMA_VALIDATION, INVALID_ARG, etc.)",
+  "translateSchemaValidationError: converts JSON Pointer errors into LLM-friendly language",
+  "buildEmptySearchGuidance: strategy-change guidance for empty search loops",
+  "buildEditMismatchContext: reads file to find closest oldText match",
+  "buildCircuitBreakMessage / buildEditLoopGuidance: escalating guidance for repeated failures",
+];
+
+/** Features already analyzed and deferred (do NOT re-suggest). */
+export const DEFERRED_FEATURES = [
+  "Auto-resolve ENOENT by trying extensions (.ts, .js, .json): HIGH RISK of false positives",
+  "Schema introspection for null stripping: current approach already strips all non-content nulls (more aggressive)",
+  "Schema introspection for array wrapping: remaining uncovered cases are 1x frequency — not worth effort",
+];
 
 /**
  * Build the user prompt from analysis data.
@@ -145,17 +216,11 @@ export function buildUserPrompt(
   }
 
   parts.push("## Current Repair Capabilities\n");
+  parts.push("### Dispatch-Level Field Repairs (repairs.ts)\n");
   parts.push("The following repairs already exist (from repairs.ts):");
-  parts.push("1. clean-path: unwrap markdown links, resolve ~/ paths");
-  parts.push("2. parse-json: parse stringified JSON arrays/objects");
-  parts.push("3. wrap-array: wrap bare strings/values as arrays");
-  parts.push("4. wrap-object-as-array: wrap objects as single-element arrays");
-  parts.push("5. split-string-to-array: split comma/space-separated strings");
-  parts.push("6. coerce-boolean: convert 'true'/'yes'/'1' to boolean");
-  parts.push("7. coerce-number: convert '42'/'3.14' to number");
-  parts.push("8. strip-extra-properties: remove extra fields from array items");
-  parts.push("9. applyRelationalDefaults: add missing offset/limit defaults");
-  parts.push("10. isNullLikeString: strip null/none/n/a strings");
+  for (let i = 0; i < DISPATCH_CAPABILITIES.length; i++) {
+    parts.push(`${i + 1}. ${DISPATCH_CAPABILITIES[i]}`);
+  }
   parts.push("");
 
   parts.push("Field classification sets:");
@@ -164,6 +229,27 @@ export function buildUserPrompt(
   parts.push("- BOOLEAN_FIELD_NAMES: strict, force, verbose, quiet, debug, recursive, ...");
   parts.push("- CONTENT_FIELD_NAMES (NEVER TOUCH): content, text, command, oldText, newText, code, ...");
   parts.push("- NUMBER_FIELD_NAMES: offset, limit, timeout, concurrency, maxTokens, ...");
+  parts.push("");
+
+  parts.push("### Handler-Level Protections (index.ts)\n");
+  parts.push("The following protections run in the tool_call/tool_result handlers BEFORE the dispatch repairs:");
+  for (let i = 0; i < HANDLER_CAPABILITIES.length; i++) {
+    parts.push(`${i + 1}. ${HANDLER_CAPABILITIES[i]}`);
+  }
+  parts.push("");
+
+  parts.push("### Error Guidance & Recovery (repairs/guidance.ts + recorder/classifier.ts)\n");
+  parts.push("Context-aware help injected on tool failures:");
+  for (const item of GUIDANCE_CAPABILITIES) {
+    parts.push(`- ${item}`);
+  }
+  parts.push("");
+
+  parts.push("### Already Deferred/Rejected Features\n");
+  parts.push("The following were previously analyzed and deferred (do NOT re-suggest them):");
+  for (let i = 0; i < DEFERRED_FEATURES.length; i++) {
+    parts.push(`${i + 1}. ${DEFERRED_FEATURES[i]}`);
+  }
   parts.push("");
 
   const toolEntries = Object.entries(stats.byTool)

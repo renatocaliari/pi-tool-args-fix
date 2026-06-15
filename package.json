@@ -1,6 +1,6 @@
 {
   "name": "pi-tool-repair-layer",
-  "version": "0.15.12-alpha",
+  "version": "0.15.13-alpha",
   "description": "Intercepts tool calls and repairs common LLM argument mistakes before execution — null stripping, JSON parsing, array wrapping, markdown path cleanup, relational defaults, and schema-aware extra property stripping.",
   "type": "module",
   "main": "./index.ts",

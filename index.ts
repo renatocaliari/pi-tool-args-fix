@@ -16,6 +16,7 @@ import {
 	isContentField,
 	extractTextContent,
 	repairObjectFields,
+	extractBashPaths,
 	extractPathsFromArgs,
 	suggestAutoTimeout,
 	ContentHashCache,
@@ -32,6 +33,7 @@ import {
 	buildPathValidationGuidance,
 	buildEmptySearchGuidance,
 	buildEditLoopGuidance,
+	getGuidancePriority,
 	resolvePath,
 	REPAIRABLE_TOOLS,
 } from "./repairs.js";
@@ -128,6 +130,23 @@ function buildToolResultEvent(
 }
 
 /**
+ * Read a file from disk and update the ContentHashCache.
+ * Shared helper used by Phase 5 for edit/write/read cache updates.
+ * Returns true if the cache was updated, false on error.
+ */
+async function updateCacheFromFile(resolvedPath: string): Promise<boolean> {
+	try {
+		const fileContent = await fs.readFile(resolvedPath, "utf-8").catch(() => null);
+		if (fileContent !== null) {
+			contentHashCache.setHash(resolvedPath, fileContent);
+			contentHashCache.recordRead(resolvedPath, eventSeq);
+			return true;
+		}
+	} catch { /* skip */ }
+	return false;
+}
+
+/**
  * Cap for the total guidance text injected into a single `context` event.
  *
  * Pending guidance is a side-channel buffer that accumulates across many
@@ -143,24 +162,6 @@ function buildToolResultEvent(
  * later turns — they remain in the JSONL log for analytics.
  */
 const MAX_GUIDANCE_INJECTION_CHARS = 2000;
-
-/**
- * Cache-stable hash for guidance keys.
- *
- * FNV-1a 32-bit → base-36 string (~7 chars). Used to derive deterministic,
- * short, collision-resistant key segments for guidance dedup where the raw
- * text (error messages, JSON blobs) would make the key long or unstable.
- * NOT a cryptographic hash — just stable enough for one-shot-per-session
- * dedup. ~2³² buckets, irrelevant for our workload.
- */
-function fnv1a(s: string): string {
-	let h = 0x811c9dc5;
-	for (let i = 0; i < s.length; i++) {
-		h ^= s.charCodeAt(i);
-		h = Math.imul(h, 0x01000193) >>> 0;
-	}
-	return h.toString(36);
-}
 
 /**
  * Queue guidance for the next `context` event if not already injected this session.
@@ -410,6 +411,25 @@ export default function (pi: ExtensionAPI) {
 
 		// ── Step 3b: Path validation (pre-flight ENOENT detection) ──────
 		const paths = extractPathsFromArgs(withDefaults);
+
+		// Bash: also extract unquoted path-like tokens that extractPathsFromArgs misses
+		// (cat file.ts, ./script.sh, etc.)
+		if (event.toolName === "bash" && typeof withDefaults.command === "string") {
+			const cmd = withDefaults.command as string;
+			const bashPaths = extractBashPaths(cmd);
+			for (const p of bashPaths) {
+				if (!paths.includes(p)) paths.push(p);
+			}
+			// cd <target> — target is always a path, even if bare name (no / or .)
+			const cdMatch = cmd.match(/\bcd\s+(\S+)/);
+			if (cdMatch) {
+				const cdTarget = cdMatch[1]!.replace(/[;&|].*$/, "").trim();
+				if (cdTarget && !cdTarget.startsWith("-") && !cdTarget.startsWith("$") && !paths.includes(cdTarget)) {
+					paths.push(cdTarget);
+				}
+			}
+		}
+
 		const hasContentField = Object.keys(withDefaults).some(k => isContentField(k));
 		if (paths.length > 0 && !hasContentField) {
 			const invalidPaths: string[] = [];
@@ -422,35 +442,46 @@ export default function (pi: ExtensionAPI) {
 					if (!exists) invalidPaths.push(resolved);
 				} catch { /* skip */ }
 			}
-			if (invalidPaths.length > 0 && event.toolName !== "bash") {
-				queueGuidance(
-					`path:${event.toolName}:${JSON.stringify(invalidPaths)}`,
-					buildPathValidationGuidance(invalidPaths, event.toolName),
-					true,
-				);
-				eventSeq++;
-				recordEvent({
-					ts: new Date().toISOString(),
-					eventType: "tool_result",
-					sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
-					turnIndex: eventSeq,
-					toolName: event.toolName,
-					provider: ctx.model?.provider ?? "unknown",
-					model: ctx.model?.id ?? "unknown",
-					repairs: [],
-					wasRepaired: false,
-					repairSkipped: false,
-					wouldHaveRepaired: [],
-					executionFailed: true,
-					executionErrorType: "ENOENT",
-					wasHandled: true,
-					handleType: "path_validation",
-					blindspotCategory: null,
-					inputKeys: Object.keys(originalInputClone),
-					inputNullKeys: originalNullKeys,
-					inputExtraProps: [],
-				});
-				return { content: [{ type: "text" as const, text: BLOCK_MESSAGE }], isError: true };
+			if (invalidPaths.length > 0) {
+				if (event.toolName !== "bash") {
+					queueGuidance(
+						`path:${event.toolName}:${JSON.stringify(invalidPaths)}`,
+						buildPathValidationGuidance(invalidPaths, event.toolName),
+						true,
+					);
+					eventSeq++;
+					recordEvent({
+						ts: new Date().toISOString(),
+						eventType: "tool_result",
+						sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+						turnIndex: eventSeq,
+						toolName: event.toolName,
+						provider: ctx.model?.provider ?? "unknown",
+						model: ctx.model?.id ?? "unknown",
+						repairs: [],
+						wasRepaired: false,
+						repairSkipped: false,
+						wouldHaveRepaired: [],
+						executionFailed: true,
+						executionErrorType: "ENOENT",
+						wasHandled: true,
+						handleType: "path_validation",
+						blindspotCategory: null,
+						inputKeys: Object.keys(originalInputClone),
+						inputNullKeys: originalNullKeys,
+						inputExtraProps: [],
+					});
+					return { content: [{ type: "text" as const, text: BLOCK_MESSAGE }], isError: true };
+				} else {
+					// Bash: queue guidance but don't block — command may still work
+					queueGuidance(
+						`bash-path:${JSON.stringify(invalidPaths)}`,
+						`⚠️ Path validation: ${invalidPaths.length} path(s) referenced in the command were not found.\n` +
+						invalidPaths.map(p => `  - ${p}`).join("\n") + "\n\n" +
+						"The command may still run, but verify these paths exist.",
+						true,
+					);
+				}
 			}
 		}
 
@@ -838,20 +869,44 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		// Phase 5: Record content hash
-		if (!err.hasError && (event.toolName === "read" || event.toolName === "read_file")) {
-			const inputPath = (event.input as Record<string, unknown>)?.path;
-			if (typeof inputPath === "string" && inputPath) {
-				const resolved = inputPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", inputPath.slice(2)) : inputPath;
-				const content = extractTextContent(event.content);
-				if (content && content.length < 500_000) {
-					try {
-						const fileContent = await fs.readFile(resolved, "utf-8").catch(() => null);
-						if (fileContent !== null) {
-							contentHashCache.setHash(resolved, fileContent);
-							contentHashCache.recordRead(resolved, eventSeq);
+		// Phase 5: Record content hash + update after edit/write
+		// After a successful edit or write, update ContentHashCache so
+		// subsequent staleness checks don't false-positive on the same file.
+		// Without this, sequential edits (edit A → edit B without re-read)
+		// would be blocked as "file content changed" even though the model
+		// itself was responsible for the change.
+		if (!err.hasError) {
+			const toolName = event.toolName;
+			const isRead = toolName === "read" || toolName === "read_file";
+			const isEdit = toolName === "edit" || toolName === "edit_file";
+			const isWrite = toolName === "write";
+
+			if (isRead || isEdit || isWrite) {
+				let inputPath: string | undefined;
+
+				if (isRead || isWrite || toolName === "edit") {
+					inputPath = (event.input as Record<string, unknown>)?.path as string | undefined;
+				} else if (toolName === "edit_file") {
+					const files = (event.input as Record<string, unknown>)?.files as Array<Record<string, unknown>> | undefined;
+					if (files && files.length > 0) {
+						inputPath = files[0]?.path as string | undefined;
+					}
+				}
+
+				if (typeof inputPath === "string" && inputPath) {
+					const resolved = inputPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", inputPath.slice(2)) : inputPath;
+
+					// For reads: skip hashing when returned content is very large
+					if (isRead) {
+						const content = extractTextContent(event.content);
+						if (content && content.length < 500_000) {
+							// Read the actual file to get a hash for staleness detection
+							await updateCacheFromFile(resolved);
 						}
-					} catch { /* skip */ }
+					} else {
+						// Edit/write: always update cache so sequential edits don't false-positive
+						await updateCacheFromFile(resolved);
+					}
 				}
 			}
 		}
@@ -904,14 +959,28 @@ export default function (pi: ExtensionAPI) {
 		if (pendingGuidance.length === 0) return undefined;
 
 		// Cap the joined text to protect LLM prefix cache and context window.
-		// FIFO drop — oldest items are typically stale by the time we hit the
-		// cap, and the most recent guidance is the most relevant to the LLM.
+		// Priority-based drop — drops LOWEST-priority items first (circuit breaker
+		// outranks tool help). Only falls back to FIFO (shift) when priority tie.
 		// Last-resort: if a single item still exceeds the cap after all others
 		// are dropped, hard-truncate it. The cap is always enforced.
 		const SEP = "\n\n";
 		let suppressedCount = 0;
 		while (pendingGuidance.length > 1 && pendingGuidance.join(SEP).length > MAX_GUIDANCE_INJECTION_CHARS) {
-			pendingGuidance.shift();
+			// Find lowest-priority item (highest getGuidancePriority value)
+			let lowestIdx = -1;
+			let lowestPriority = -1;
+			for (let i = 0; i < pendingGuidance.length; i++) {
+				const p = getGuidancePriority(pendingGuidance[i]);
+				if (p > lowestPriority) {
+					lowestPriority = p;
+					lowestIdx = i;
+				}
+			}
+			if (lowestIdx >= 0) {
+				pendingGuidance.splice(lowestIdx, 1);
+			} else {
+				pendingGuidance.shift();
+			}
 			suppressedCount++;
 		}
 		let guidanceText = pendingGuidance.join(SEP);
@@ -920,7 +989,7 @@ export default function (pi: ExtensionAPI) {
 			suppressedCount++;
 		}
 		if (suppressedCount > 0) {
-			guidanceText = `(${suppressedCount} older guidance item${suppressedCount === 1 ? "" : "s"} suppressed — see JSONL log for full history)\n\n${guidanceText}`;
+			guidanceText = `(${suppressedCount} lower-priority guidance item${suppressedCount === 1 ? "" : "s"} suppressed — see JSONL log for full history)\n\n${guidanceText}`;
 			stats.guidanceSuppressed += suppressedCount;
 		}
 

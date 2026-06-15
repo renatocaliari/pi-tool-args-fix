@@ -18,6 +18,7 @@ export {
   cleanPathValue,
   resolvePath,
   isUrlOrFlag,
+  extractBashPaths,
   extractPathsFromArgs,
 } from "./repairs/path-utils.js";
 
@@ -76,6 +77,10 @@ export {
   ContentHashCache,
   simpleHash,
 } from "./repairs/cache.js";
+
+export {
+  getGuidancePriority,
+} from "./repairs/guidance-priority.js";
 
 export {
   REPAIRABLE_TOOLS,

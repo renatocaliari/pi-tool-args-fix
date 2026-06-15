@@ -115,6 +115,7 @@ const SUB_MODULES = [
   "directory.ts",
   "timeout.ts",
   "guidance.ts",
+  "guidance-priority.ts",
   "cache.ts",
   "dispatch.ts",
 ];

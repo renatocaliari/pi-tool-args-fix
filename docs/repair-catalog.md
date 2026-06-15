@@ -60,7 +60,7 @@ const repairDispatchers = {
 
 ---
 
-## 2. Execution-Aware Features (repairs.ts)
+## 2. Execution-Aware Features (repairs.ts + index.ts)
 
 Runtime adjustments — not field repairs, but automatic safety nets.
 
@@ -68,10 +68,14 @@ Runtime adjustments — not field repairs, but automatic safety nets.
 |---------|-------------|------|
 | **Relational defaults** | `applyRelationalDefaults` | Tool has `limit` but missing `offset` |
 | **Directory fallback** | `isEisdirError`, `formatDirectoryListing`, `extractTextContent` | `read`/`read_file` on a directory |
+| **Write directory fallback** | `formatDirectoryListing` | `write` to a path without extension |
 | **Content hash staleness** | `ContentHashCache`, `simpleHash` | After every successful `read`/`read_file` |
+| **ContentHashCache after edit/write** | `ContentHashCache`, `updateCacheFromFile` | After successful `edit`/`edit_file`/`write` — prevents false-positive staleness on sequential edits |
 | **Empty result detection** | — (inline in `detectEmptyResult`) | Tool returns success with no content |
-| **Path resolution** | `resolvePath`, `extractPathsFromArgs`, `isUrlOrFlag` | Path-related errors |
+| **Path validation (non-bash)** | `resolvePath`, `extractPathsFromArgs`, `isUrlOrFlag` | Blocks tool with guidance on ENOENT |
+| **Path guidance (bash)** | `resolvePath`, `extractPathsFromArgs` | Queues guidance on ENOENT, does NOT block |
 | **Auto-timeout** | `isLongRunningCommand`, `suggestAutoTimeout` | Detectable long-running commands |
+| **Priority-based guidance cap** | `getGuidancePriority` | When guidance exceeds 2000-char cap, drops lowest-priority items first (circuit breaker > staleness > tool help) |
 
 ---
 

@@ -79,6 +79,55 @@ export function isUrlOrFlag(value: string): boolean {
 }
 
 /**
+ * Extract path-like tokens from a bash command string.
+ *
+ * Pure function — no I/O. Catches unquoted file paths that
+ * `extractPathsFromArgs` misses (e.g. `cd node_modules`,
+ * `cat file.ts`, `./script.sh`, `src/components/Button.tsx`).
+ *
+ * Rules:
+ * - Tokens containing `/` (path separators) — excludes flags/URLs
+ * - Tokens ending with a file extension after a dot
+ * - Tokens starting with `./` or `../`
+ *
+ * Explicitly excludes: flags (`-`), env vars (`$`), URLs (`http`)
+ */
+export function extractBashPaths(command: string): string[] {
+  const paths: string[] = [];
+  const tokens = command.split(/\s+/);
+
+  for (const token of tokens) {
+    const t = token.trim();
+    if (!t) continue;
+    // Skip flags, env vars, URLs
+    if (t.startsWith("-") || t.startsWith("$") || t.startsWith("http")) continue;
+
+    // Contains path separator (and is not a flag/env/url — already checked)
+    if (t.includes("/")) {
+      if (!paths.includes(t)) paths.push(t);
+      continue;
+    }
+
+    // Hidden file: .env, .gitignore, .config (but not . or ..)
+    if (t.startsWith(".") && t.length > 1 && !t.startsWith("..")) {
+      if (!paths.includes(t)) paths.push(t);
+      continue;
+    }
+
+    // Has file extension: dot not at start, followed by alphanumeric extension (1-6 chars)
+    const dotIdx = t.lastIndexOf(".");
+    if (dotIdx > 0 && dotIdx < t.length - 1) {
+      const ext = t.slice(dotIdx + 1);
+      if (/^[a-zA-Z0-9]+$/.test(ext) && ext.length <= 6) {
+        if (!paths.includes(t)) paths.push(t);
+      }
+    }
+  }
+
+  return paths;
+}
+
+/**
  * Extract file/directory path-like string values from tool arguments.
  *
  * Returns all string values from known path fields, plus string values

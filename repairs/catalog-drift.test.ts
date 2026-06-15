@@ -24,6 +24,12 @@
  */
 
 import { describe, it, expect } from "vitest";
+import {
+  DISPATCH_CAPABILITIES,
+  HANDLER_CAPABILITIES,
+  GUIDANCE_CAPABILITIES,
+  DEFERRED_FEATURES,
+} from "../suggest-repairs/analysis.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -214,6 +220,30 @@ describe("catalog drift guard — dispatch table code block", () => {
     for (const entry of tableEntries) {
       expect(sourceDispatchers).toContain(entry);
     }
+  });
+});
+
+describe("catalog drift guard — capability constants (analysis.ts)", () => {
+  it("DISPATCH_CAPABILITIES has 10 items (matching section 1 of catalog)", () => {
+    expect(DISPATCH_CAPABILITIES).toHaveLength(10);
+    expect(DISPATCH_CAPABILITIES[0]).toMatch(/^clean-path/);
+    expect(DISPATCH_CAPABILITIES[DISPATCH_CAPABILITIES.length - 1]).toMatch(/^isNullLikeString/);
+  });
+
+  it("HANDLER_CAPABILITIES has 13 items (matching section 2 of catalog)", () => {
+    expect(HANDLER_CAPABILITIES).toHaveLength(13);
+    expect(HANDLER_CAPABILITIES[0]).toMatch(/^Auto-timeout injection/);
+    expect(HANDLER_CAPABILITIES[HANDLER_CAPABILITIES.length - 1]).toMatch(/^Priority-based/);
+  });
+
+  it("GUIDANCE_CAPABILITIES has 6 items", () => {
+    expect(GUIDANCE_CAPABILITIES).toHaveLength(6);
+    expect(GUIDANCE_CAPABILITIES[0]).toMatch(/^getToolHelp/);
+  });
+
+  it("DEFERRED_FEATURES has 3 items", () => {
+    expect(DEFERRED_FEATURES).toHaveLength(3);
+    expect(DEFERRED_FEATURES[0]).toMatch(/^Auto-resolve ENOENT/);
   });
 });
 
