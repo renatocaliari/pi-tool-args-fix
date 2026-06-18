@@ -2,6 +2,28 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [0.16.0-alpha] - 2026-06-18
+
+### Added
+
+- **EDIT_MISMATCH file preview fallback** — When oldText context match
+  fails, shows first 15 lines of the target file with line numbers instead
+  of the misleading "wrong file" guidance. LLM can see actual content and
+  craft matching oldText.
+- **ENOENT path validation with directory listing** — Pre-execution path
+  validation now lists parent directory contents and highlights similar
+  filenames when a path is not found. Replaces generic "check spelling"
+  advice with concrete file listings.
+- **EISDIR pre-flight for write tool** — Step 3b-ii now covers write
+  alongside read/read_file, preventing EISDIR errors before execution.
+  Previously only the less robust Phase 6 (post-execution, path.extname
+  heuristic) handled this case.
+
+### Tests
+
+- 23 new structural regression tests pinning the new behaviors in index.ts
+  (601 total, all passing).
+
 ## [0.15.13-alpha] - 2026-06-15
 
 ### Added

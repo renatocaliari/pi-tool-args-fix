@@ -219,8 +219,21 @@ async function buildEditMismatchGuidanceText(
 		const c = buildEditMismatchContext(fileContent, oldText);
 		if (c) return buildEnhancedEditMismatchGuidance(getToolHelp("edit"), c);
 
-		const inputPath: string = event.input?.path ?? filePath;
-		return buildEditWrongFileGuidance(inputPath, filePath);
+		// No close match — show file preview so LLM can see actual content
+		const allLines = fileContent.split('\n');
+		const previewLines = allLines.slice(0, 15);
+		const preview = previewLines.map((l, i) => `${String(i + 1).padStart(4)}│ ${l}`).join('\n');
+		const suffix = allLines.length > 15 ? `\n  ... (${allLines.length - 15} more lines)` : '';
+		return [
+			`📄 File preview (first ${previewLines.length} lines):`,
+			'```',
+			preview + suffix,
+			'```',
+			'',
+			`The oldText did not match any content in this file.`,
+			`The content may have changed, or you may be editing the wrong file.`,
+			`Please re-read the file and re-apply the edit with exact current text.`,
+		].join('\n');
 	} catch {
 		const fallbackPath = event.input?.path;
 		if (fallbackPath && typeof fallbackPath === "string" && fallbackPath !== filePath) {
@@ -234,7 +247,21 @@ async function buildEditMismatchGuidanceText(
 				}
 				const c = buildEditMismatchContext(fileContent, oldText);
 				if (c) return buildEnhancedEditMismatchGuidance(getToolHelp("edit"), c);
-				return buildEditWrongFileGuidance(fallbackPath, filePath);
+				// No close match — show file preview
+				const fallbackAllLines = fileContent.split('\n');
+				const fallbackPreviewLines = fallbackAllLines.slice(0, 15);
+				const fallbackPreview = fallbackPreviewLines.map((l, i) => `${String(i + 1).padStart(4)}│ ${l}`).join('\n');
+				const fallbackSuffix = fallbackAllLines.length > 15 ? `\n  ... (${fallbackAllLines.length - 15} more lines)` : '';
+				return [
+					`📄 File preview (first ${fallbackPreviewLines.length} lines):`,
+					'```',
+					fallbackPreview + fallbackSuffix,
+					'```',
+					'',
+					`The oldText did not match any content in this file.`,
+					`The content may have changed, or you may be editing the wrong file.`,
+					`Please re-read the file and re-apply the edit with exact current text.`,
+				].join('\n');
 			} catch {
 				return null;
 			}
@@ -443,10 +470,30 @@ export default function (pi: ExtensionAPI) {
 				} catch { /* skip */ }
 			}
 			if (invalidPaths.length > 0) {
+				// Build directory listing hint for the first invalid path
+				let dirHint = '';
+				const firstInvalid = invalidPaths[0];
+				const parentDir = path.dirname(firstInvalid);
+				const basename = path.basename(firstInvalid);
+				try {
+					const parentExists = await fs.stat(parentDir).then(s => s.isDirectory()).catch(() => false);
+					if (parentExists) {
+						const entries = await fs.readdir(parentDir);
+						const limited = entries.slice(0, 20);
+						const similar = entries.filter(e => e.toLowerCase().includes(basename.toLowerCase()));
+						const listing = limited.map(e => `  ${e}`).join('\n');
+						dirHint = '\n\n📁 Directory: ' + parentDir + '\n' + listing +
+							(entries.length > 20 ? `\n  ... (${entries.length - 20} more)` : '');
+						if (similar.length > 0) {
+							dirHint += '\n\n💡 Similar entries: ' + similar.slice(0, 5).map(e => `"${e}"`).join(', ');
+						}
+					}
+				} catch { /* skip */ }
+
 				if (event.toolName !== "bash") {
 					queueGuidance(
 						`path:${event.toolName}:${JSON.stringify(invalidPaths)}`,
-						buildPathValidationGuidance(invalidPaths, event.toolName),
+						buildPathValidationGuidance(invalidPaths, event.toolName) + dirHint,
 						true,
 					);
 					eventSeq++;
@@ -478,15 +525,15 @@ export default function (pi: ExtensionAPI) {
 						`bash-path:${JSON.stringify(invalidPaths)}`,
 						`⚠️ Path validation: ${invalidPaths.length} path(s) referenced in the command were not found.\n` +
 						invalidPaths.map(p => `  - ${p}`).join("\n") + "\n\n" +
-						"The command may still run, but verify these paths exist.",
+						"The command may still run, but verify these paths exist." + dirHint,
 						true,
 					);
 				}
 			}
 		}
 
-		// ── Step 3b-ii: EISDIR pre-flight (read/read_file) ──────────────
-		if ((event.toolName === "read" || event.toolName === "read_file") && !hasContentField) {
+		// ── Step 3b-ii: EISDIR pre-flight (read/read_file/write) ─────
+		if (event.toolName === "read" || event.toolName === "read_file" || event.toolName === "write") {
 			const readPath = withDefaults?.path as string | undefined;
 			if (typeof readPath === "string") {
 				const resolved = readPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", readPath.slice(2)) : readPath;

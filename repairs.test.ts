@@ -97,6 +97,84 @@ describe("structural integrity — editPath scoping in index.ts", () => {
   });
 });
 
+// ─── Structural Integrity: Implementation Changes ───────────────────────
+
+describe("structural integrity — EDIT_MISMATCH file preview fallback", () => {
+  function readIndexSource(): string {
+    const fs = require("fs");
+    return fs.readFileSync(require.resolve("./index.ts"), "utf-8");
+  }
+
+  it("replaces buildEditWrongFileGuidance with file preview when context match fails", () => {
+    const source = readIndexSource();
+    const fnStart = source.indexOf("async function buildEditMismatchGuidanceText");
+    const fnEnd = source.indexOf("/** Minimal block message */", fnStart);
+    const fnBody = source.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
+    // Must NOT contain the old "wrong file" fallback pattern
+    expect(fnBody).not.toContain("buildEditWrongFileGuidance");
+    // Must contain the new file preview pattern
+    expect(fnBody).toContain("File preview (first");
+  });
+
+  it("generates line-numbered preview in both try and catch fallback paths", () => {
+    const source = readIndexSource();
+    const fnStart = source.indexOf("async function buildEditMismatchGuidanceText");
+    const fnEnd = source.indexOf("/** Minimal block message returned", fnStart);
+    const fnBody = source.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
+    // Both paths use padStart to create numbered lines
+    const padMatches = fnBody.match(/\.padStart\(4\)/g);
+    expect(padMatches).not.toBeNull();
+    expect(padMatches!.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("structural integrity — EISDIR pre-flight includes write", () => {
+  function readIndexSource(): string {
+    const fs = require("fs");
+    return fs.readFileSync(require.resolve("./index.ts"), "utf-8");
+  }
+
+  it("Step 3b-ii condition now includes write alongside read/read_file", () => {
+    const source = readIndexSource();
+    const marker = source.indexOf("// ── Step 3b-ii:");
+    expect(marker).toBeGreaterThan(0);
+    const condLine = source.slice(marker, marker + 200);
+    expect(condLine).toMatch(/toolName.*===.*"write"/);
+    expect(condLine).toMatch(/toolName.*===.*"read"/);
+    expect(condLine).not.toContain("hasContentField");
+  });
+});
+
+describe("structural integrity — ENOENT path validation directory hint", () => {
+  function readIndexSource(): string {
+    const fs = require("fs");
+    return fs.readFileSync(require.resolve("./index.ts"), "utf-8");
+  }
+
+  it("path validation contains dirHint logic with parent directory listing", () => {
+    const source = readIndexSource();
+    const step3b = source.indexOf("// ── Step 3b: Path validation");
+    const step3bii = source.indexOf("// ── Step 3b-ii:");
+    const block = source.slice(step3b, step3bii > 0 ? step3bii : step3b + 3000);
+    expect(block).toContain("dirHint");
+    expect(block).toContain("path.dirname(firstInvalid)");
+    expect(block).toContain("fs.readdir(parentDir)");
+    expect(block).toContain("Similar entries");
+  });
+
+  it("dirHint is appended to guidance in both bash and non-bash paths", () => {
+    const source = readIndexSource();
+    const step3b = source.indexOf("// ── Step 3b: Path validation");
+    const step3bii = source.indexOf("// ── Step 3b-ii:");
+    const block = source.slice(step3b, step3bii > 0 ? step3bii : step3b + 3000);
+    // Appended to non-bash guidance
+    const nonBashGuidance = block.indexOf("buildPathValidationGuidance(invalidPaths, event.toolName) + dirHint");
+    expect(nonBashGuidance).toBeGreaterThan(0);
+    // Appended to bash guidance
+    expect(block).toContain("dirHint,");
+  });
+});
+
 // ═════════════════════════════════════════════════════════════════════════
 // Cache-Safety Regression Tests
 // ═════════════════════════════════════════════════════════════════════════
