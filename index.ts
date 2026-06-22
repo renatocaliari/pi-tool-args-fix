@@ -532,43 +532,8 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		// ── Step 3b-ii: EISDIR pre-flight (read/read_file/write) ─────
-		if (event.toolName === "read" || event.toolName === "read_file" || event.toolName === "write") {
-			const readPath = withDefaults?.path as string | undefined;
-			if (typeof readPath === "string") {
-				const resolved = readPath.startsWith("~/") ? path.join(process.env.HOME || "/home/user", readPath.slice(2)) : readPath;
-				try {
-					const stat = await fs.stat(resolved);
-					if (stat.isDirectory()) {
-						const entries = await fs.readdir(resolved);
-						const { listingContent } = formatDirectoryListing(resolved, entries, event.toolName);
-						eventSeq++;
-						recordEvent({
-							ts: new Date().toISOString(),
-							eventType: "tool_result",
-							sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
-							turnIndex: eventSeq,
-							toolName: event.toolName,
-							provider: ctx.model?.provider ?? "unknown",
-							model: ctx.model?.id ?? "unknown",
-							repairs: ["directory fallback"],
-							wasRepaired: true,
-							repairSkipped: false,
-							wouldHaveRepaired: [],
-							executionFailed: false,
-							executionErrorType: null,
-							wasHandled: true,
-							handleType: "directory_fallback",
-							blindspotCategory: null,
-							inputKeys: Object.keys(originalInputClone),
-							inputNullKeys: originalNullKeys,
-							inputExtraProps: [],
-						});
-						return { content: [{ type: "text" as const, text: listingContent }], isError: false };
-					}
-				} catch { /* skip */ }
-			}
-		}
+		// NOTE: EISDIR directory fallback for read/read_file is in tool_result (Phase 2.75).
+		// tool_call cannot return replacement content — only { block: true } is supported.
 
 		// ── Shared state for edit tool across Steps 3c, 3d, and Record ──
 		let editPath: string | undefined;
@@ -834,6 +799,50 @@ export default function (pi: ExtensionAPI) {
 						emptySearchTracker.recordFound();
 					}
 				}
+			}
+		}
+
+		// Phase 2.75: EISDIR fallback for read/read_file
+		// Replaces EISDIR errors with directory listing, BEFORE Phase 3 early return.
+		if (err.hasError && err.executionErrorType === "EISDIR" &&
+				(event.toolName === "read" || event.toolName === "read_file")) {
+			const inputPath = (event.input as Record<string, unknown>)?.path;
+			if (typeof inputPath === "string" && inputPath) {
+				const resolved = resolvePath(inputPath, process.env.HOME);
+				try {
+					const stat = await fs.stat(resolved);
+					if (stat.isDirectory()) {
+						const entries = await fs.readdir(resolved);
+						const { listingContent } = formatDirectoryListing(resolved, entries, event.toolName);
+						// Clear error state so Phase 3+ don't fire guidance
+						err.hasError = false;
+						err.executionErrorType = null;
+						err.blindspotCategory = null;
+						eventSeq++;
+						recordEvent({
+							ts: new Date().toISOString(),
+							eventType: "tool_result",
+							sessionId: (ctx.sessionManager as any)?.getSessionId?.() ?? "unknown",
+							turnIndex: eventSeq,
+							toolName: event.toolName,
+							provider: ctx.model?.provider ?? "unknown",
+							model: ctx.model?.id ?? "unknown",
+							repairs: ["directory fallback"],
+							wasRepaired: true,
+							repairSkipped: false,
+							wouldHaveRepaired: [],
+							executionFailed: false,
+							executionErrorType: null,
+							wasHandled: true,
+							handleType: "directory_fallback",
+							blindspotCategory: null,
+							inputKeys: Object.keys(event.input ?? {}),
+							inputNullKeys: [],
+							inputExtraProps: [],
+						});
+						return { content: [{ type: "text" as const, text: listingContent }], isError: false };
+					}
+				} catch { /* skip */ }
 			}
 		}
 

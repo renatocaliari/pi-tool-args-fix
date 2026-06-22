@@ -2,6 +2,33 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [0.17.0-alpha] - 2026-06-22
+
+### Fixed
+
+- **EISDIR directory fallback moved from tool_call to tool_result** —
+  Step 3b-ii in `tool_call` returned `{ content, isError: false }` but the
+  pi API only supports `{ block: true }` from `tool_call`. The return was
+  silently ignored → `read` on a directory produced raw EISDIR error.
+  
+  **Fix:** Removed broken Step 3b-ii. Added Phase 2.75 in `tool_result`
+  (before Phase 3 early return) that catches `err.executionErrorType ===
+  "EISDIR"` for `read`/`read_file`, stats the directory, and returns a
+  formatted listing via `formatDirectoryListing` — same pattern as the
+  Phase 6 write-directory-fallback.
+
+### Tests
+
+- **tool_call cache-safety regression** — verifies `tool_call` handler
+  never returns `{ content, isError }` directly (only `undefined` or
+  blocking errors).
+- **read/read_file EISDIR fallback regression** — verifies Phase 2.75
+  replaces EISDIR errors with directory listing for both tools.
+- **Non-EISDIR read errors still cache-safe** — ENOENT on `read` returns
+  `undefined`, Phase 2.75 only catches EISDIR.
+- **Structural integrity updated** — tests check Phase 2.75 exists and
+  Step 3b-ii is removed.
+
 ## [0.16.0-alpha] - 2026-06-18
 
 ### Added

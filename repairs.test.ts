@@ -128,20 +128,28 @@ describe("structural integrity — EDIT_MISMATCH file preview fallback", () => {
   });
 });
 
-describe("structural integrity — EISDIR pre-flight includes write", () => {
+describe("structural integrity — EISDIR fallback moved to tool_result", () => {
   function readIndexSource(): string {
     const fs = require("fs");
     return fs.readFileSync(require.resolve("./index.ts"), "utf-8");
   }
 
-  it("Step 3b-ii condition now includes write alongside read/read_file", () => {
+  it("Phase 2.75 handles EISDIR for read/read_file in tool_result", () => {
     const source = readIndexSource();
-    const marker = source.indexOf("// ── Step 3b-ii:");
+    const marker = source.indexOf("// Phase 2.75: EISDIR fallback for read/read_file");
     expect(marker).toBeGreaterThan(0);
-    const condLine = source.slice(marker, marker + 200);
-    expect(condLine).toMatch(/toolName.*===.*"write"/);
-    expect(condLine).toMatch(/toolName.*===.*"read"/);
-    expect(condLine).not.toContain("hasContentField");
+    const block = source.slice(marker, marker + 1000);
+    expect(block).toMatch(/toolName.*===.*"read"/);
+    expect(block).toMatch(/toolName.*===.*"read_file"/);
+    expect(block).toContain("err.executionErrorType === \"EISDIR\"");
+    expect(block).toContain("formatDirectoryListing");
+    expect(block).not.toContain("hasContentField");
+  });
+
+  it("Step 3b-ii is removed — tool_call cannot return replacement content", () => {
+    const source = readIndexSource();
+    expect(source).not.toContain("// ── Step 3b-ii:");
+    expect(source).toContain("EISDIR directory fallback for read/read_file is in tool_result");
   });
 });
 
@@ -213,6 +221,34 @@ function createFakePi() {
   return { pi, ctx, handlers };
 }
 
+describe("cache-safety — tool_call handler", () => {
+  it("returns undefined for all repairable tools (never returns { content, isError })", async () => {
+    const mod = await import("./index.js");
+    const { pi, ctx, handlers } = createFakePi();
+    mod.default(pi as any);
+    const handler = handlers.get("tool_call")!;
+
+    // Regression: Step 3b-ii in tool_call used to return { content, isError }
+    // but pi only supports { block: true } from tool_call. This test verifies
+    // the handler never returns content directly — only undefined.
+    for (const toolName of ["read", "write", "edit", "bash", "ffgrep", "fffind"]) {
+      const result = await handler(
+        {
+          toolName,
+          input: toolName === "bash" ? { command: "echo hi" } : { path: "/tmp/ok" },
+        },
+        ctx,
+      );
+      // Some tools may return { content, isError: true } for blocking paths
+      // (ENOENT, staleness), but NEVER an unblocked content response
+      if (result !== undefined) {
+        expect(result.isError).toBe(true);
+        expect(result.block).not.toBeDefined();
+      }
+    }
+  });
+});
+
 describe("cache-safety — tool_result handler", () => {
   it("returns undefined for a normal successful bash result (no content mutation)", async () => {
     const mod = await import("./index.js");
@@ -252,7 +288,7 @@ describe("cache-safety — tool_result handler", () => {
     expect(result).toBeUndefined();
   });
 
-  it("returns undefined for read, edit, grep, find, ls (Phase 6 write-fallback is the ONLY exception)", async () => {
+  it("returns undefined for read, edit, grep, find, ls on non-dir paths (Phase 2.75 EISDIR + Phase 6 write are the only exceptions)", async () => {
     const mod = await import("./index.js");
     const { pi, ctx, handlers } = createFakePi();
     mod.default(pi as any);
@@ -307,6 +343,55 @@ describe("cache-safety — tool_result handler", () => {
       expect(result.content[0].text).toContain("a.txt");
       expect(result.content[0].text).toContain("b.txt");
       expect(result.isError).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("read/read_file EISDIR fallback IS the second documented exception (Phase 2.75, returns { content: [...] })", async () => {
+    // Phase 2.75 in tool_result replaces EISDIR errors for read/read_file
+    // with a directory listing. This is the second exception alongside
+    // Phase 6 (write directory fallback).
+    const mod = await import("./index.js");
+    const { pi, ctx, handlers } = createFakePi();
+    mod.default(pi as any);
+    const handler = handlers.get("tool_result")!;
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "repair-eisdir-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "main.ts"), "x");
+      fs.writeFileSync(path.join(tmpDir, "utils.ts"), "y");
+
+      for (const toolName of ["read", "read_file"]) {
+        const result = await handler(
+          {
+            toolName,
+            input: { path: tmpDir },
+            content: [{ type: "text", text: "EISDIR: illegal operation on a directory, read" }],
+            isError: true,
+          },
+          ctx,
+        );
+        expect(result, `toolName=${toolName} EISDIR should return content`).toBeDefined();
+        expect(result.isError).toBe(false);
+        expect(Array.isArray(result.content)).toBe(true);
+        expect(result.content[0].type).toBe("text");
+        expect(result.content[0].text).toContain("main.ts");
+        expect(result.content[0].text).toContain("utils.ts");
+        expect(result.content[0].text).toContain(`called ${toolName} on a directory`); // informational note
+        // Non-EISDIR errors should still return undefined (cache-safe)
+        const noEisdirResult = await handler(
+          {
+            toolName,
+            input: { path: tmpDir },
+            content: [{ type: "text", text: "ENOENT: no such file or directory" }],
+            isError: true,
+          },
+          ctx,
+        );
+        expect(noEisdirResult, `toolName=${toolName} non-EISDIR should return undefined`).toBeUndefined();
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
