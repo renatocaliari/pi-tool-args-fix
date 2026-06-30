@@ -14,6 +14,8 @@ import {
   readSessionEvents,
   readAllEvents,
   pruneOldSessions,
+  getLifetimeSessionCount,
+  incrementLifetimeSessionCount,
   aggregateStats,
   computeBlindspots,
   extractRepairTypes,
@@ -207,6 +209,52 @@ describe("I/O", () => {
     const lines = content.split("\n");
     const parsed = JSON.parse(lines[lines.length - 1]);
     expect(parsed.sessionId).toBe("unknown");
+  });
+});
+
+// ─── getLifetimeSessionCount / incrementLifetimeSessionCount ─────────
+
+describe("lifetime session counter", () => {
+  const counterDir = path.join(".pi", "repair-log-counter-test");
+  const counterPath = path.join(counterDir, ".session-counter");
+
+  beforeEach(() => {
+    if (fs.existsSync(counterDir)) fs.rmSync(counterDir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(counterDir)) fs.rmSync(counterDir, { recursive: true, force: true });
+  });
+
+  it("getLifetimeSessionCount returns 0 when no counter file exists", () => {
+    expect(getLifetimeSessionCount(counterDir)).toBe(0);
+  });
+
+  it("incrementLifetimeSessionCount writes and returns 1 on first call", () => {
+    const result = incrementLifetimeSessionCount(counterDir);
+    expect(result).toBe(1);
+    expect(fs.readFileSync(counterPath, "utf-8").trim()).toBe("1");
+  });
+
+  it("incrementLifetimeSessionCount increments sequentially", () => {
+    incrementLifetimeSessionCount(counterDir);
+    incrementLifetimeSessionCount(counterDir);
+    expect(getLifetimeSessionCount(counterDir)).toBe(2);
+    const result = incrementLifetimeSessionCount(counterDir);
+    expect(result).toBe(3);
+    expect(fs.readFileSync(counterPath, "utf-8").trim()).toBe("3");
+  });
+
+  it("getLifetimeSessionCount handles corrupted counter file", () => {
+    fs.mkdirSync(counterDir, { recursive: true });
+    fs.writeFileSync(counterPath, "abc", "utf-8");
+    expect(getLifetimeSessionCount(counterDir)).toBe(0);
+  });
+
+  it("getLifetimeSessionCount handles empty counter file", () => {
+    fs.mkdirSync(counterDir, { recursive: true });
+    fs.writeFileSync(counterPath, "", "utf-8");
+    expect(getLifetimeSessionCount(counterDir)).toBe(0);
   });
 });
 

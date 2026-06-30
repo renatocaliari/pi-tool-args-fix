@@ -238,6 +238,34 @@ export function pruneOldSessions(
   return removed;
 }
 
+// ─── Lifetime session counter ──────────────────────────────────────────────
+
+const SESSION_COUNTER_FILE = ".session-counter";
+
+export function getLifetimeSessionCount(logDir?: string): number {
+  const dir = logDir ?? getRepairLogDir();
+  const filePath = path.join(dir, SESSION_COUNTER_FILE);
+  try {
+    return parseInt(fs.readFileSync(filePath, "utf-8").trim(), 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function incrementLifetimeSessionCount(logDir?: string): number {
+  try {
+    const dir = logDir ?? getRepairLogDir();
+    ensureDir(dir);
+    const filePath = path.join(dir, SESSION_COUNTER_FILE);
+    const current = getLifetimeSessionCount(dir);
+    const next = current + 1;
+    fs.writeFileSync(filePath, String(next), "utf-8");
+    return next;
+  } catch {
+    return 0;
+  }
+}
+
 // ─── Analysis ─────────────────────────────────────────────────────────────
 
 /** Aggregate a list of events into summary stats. */

@@ -43,6 +43,8 @@ import {
 	recordEvent,
 	readAllEvents,
 	pruneOldSessions,
+	getLifetimeSessionCount,
+	incrementLifetimeSessionCount,
 	ConsecutiveFailureTracker,
 	ConsecutiveEmptySearchTracker,
 } from "./recorder.js";
@@ -319,11 +321,10 @@ export default function (pi: ExtensionAPI) {
 		// Retry after TUI finishes init so the title sticks.
 		setTimeout(() => setRepairStatus(ctx), 2000);
 
-		const allEvents = readAllEvents();
-		if (allEvents.length > 0) {
-			const sessionIds = new Set(allEvents.map((e: { sessionId: string }) => e.sessionId));
+		const count = incrementLifetimeSessionCount();
+		if (count > 0) {
 			ctx.ui.notify(
-				`📊 Repair Layer Active — ${sessionIds.size} session(s) logged.\n` +
+				`📊 Repair Layer Active — ${count} session(s) logged.\n` +
 				`Type /repair-stats-session for details, /repair-suggest to suggest new fixes.`,
 				"info",
 			);
