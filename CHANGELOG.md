@@ -2,6 +2,14 @@
 
 All notable changes to `pi-tool-repair-layer` are documented in this file.
 
+## [0.17.2-alpha] - 2026-07-14
+
+### Fixed
+
+- **GitHub owner from `renatocaliari` to `calionauta`** — all issues, test
+  URLs, and install instructions now point to the `calionauta` org. No other
+  project references to `renatoac82` or `renatocaliari` remain.
+
 ## [0.17.0-alpha] - 2026-06-22
 
 ### Fixed

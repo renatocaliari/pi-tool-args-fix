@@ -220,11 +220,11 @@ describe("parseIssueContent", () => {
 
 describe("buildIssueUrl", () => {
   it("should generate a valid GitHub issue URL", () => {
-    const url = buildIssueUrl("renatocaliari", "pi-tool-repair-layer", {
+    const url = buildIssueUrl("calionauta", "pi-tool-repair-layer", {
       title: "Fix ENOENT errors",
       body: "Description here",
     });
-    expect(url).toContain("github.com/renatocaliari/pi-tool-repair-layer/issues/new");
+    expect(url).toContain("github.com/calionauta/pi-tool-repair-layer/issues/new");
     expect(url).toContain("title=Fix+ENOENT+errors");
     expect(url).toContain("body=Description+here");
     expect(url).toContain("labels=suggestion");

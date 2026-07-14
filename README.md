@@ -165,7 +165,7 @@ Every error pattern without a repair is classified and surfaced. The `/repair-ga
 
 ```bash
 # Install
-pi install git:github.com/renatocaliari/pi-tool-repair-layer
+pi install git:github.com/calionauta/pi-tool-repair-layer
 
 # That's it — every tool call is intercepted and repaired automatically.
 # Monitor what's happening with built-in commands:

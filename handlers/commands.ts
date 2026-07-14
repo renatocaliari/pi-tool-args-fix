@@ -339,7 +339,7 @@ export function registerCommands(
             clearInterval(issueSpinnerTimer!);
             issueSpinnerTimer = null;
 
-            const owner = "renatocaliari";
+            const owner = "calionauta";
             const repo = "pi-tool-repair-layer";
             const issueUrl = buildIssueUrl(owner, repo, issue);
 
